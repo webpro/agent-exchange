@@ -82,8 +82,19 @@ func TestReadinessEventsDeliverBeforeHeartbeat(t *testing.T) {
 				enc := json.NewEncoder(input)
 				discover := func() {
 					t.Helper()
-					if err := enc.Encode(packet{JSONRPC: "2.0", ID: raw(1), Method: "tools/list"}); err != nil {
-						t.Fatal(err)
+					// A pipe write blocks forever once the bridge has exited without reading it.
+					wrote := make(chan error, 1)
+					go func() { wrote <- enc.Encode(packet{JSONRPC: "2.0", ID: raw(1), Method: "tools/list"}) }()
+					select {
+					case err := <-wrote:
+						if err != nil {
+							t.Fatal(err)
+						}
+					case err := <-done:
+						done <- err
+						t.Fatalf("bridge exited before discovery: %v", err)
+					case <-time.After(time.Second):
+						t.Fatal("MCP discovery request was not read")
 					}
 					select {
 					case p := <-frames:
