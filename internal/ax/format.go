@@ -85,7 +85,7 @@ func compactToolResult(method string, result any, key string) any {
 		return object{"message": out, "client_message_id": key, "submission": "submitted",
 			"next_action": "End your turn. AX wakes for replies; never poll or sleep waiting."}
 	case "ax.list":
-		var agents []Agent
+		var agents []discoveredAgent
 		if json.Unmarshal(raw(result), &agents) != nil {
 			return result
 		}
@@ -97,7 +97,7 @@ func compactToolResult(method string, result any, key string) any {
 				entry["kind"] = a.Kind
 				entry["permission_mode"] = a.Permission
 			}
-			entry["external"] = externalPolicy(a)
+			entry["external"] = externalPolicy(a.Agent)
 			if a.Host == "external" {
 				entry["delivery_mode"], entry["capabilities"] = a.DeliveryMode, a.Connectivity
 			}
@@ -113,6 +113,18 @@ func compactToolResult(method string, result any, key string) any {
 			}
 			if a.State == "permission-blocked" {
 				entry["permission_mode"] = a.Permission
+			}
+			if s := a.AgentStatus; s != nil {
+				entry["queued_count"], entry["unacknowledged_count"] = s.Queued, s.Pending
+				if s.HeadID != "" {
+					entry["head_message_id"], entry["head_state"], entry["head_age_seconds"] = s.HeadID, s.HeadState, s.HeadAge
+				}
+				if s.LastSeen != 0 {
+					entry["last_seen_at_ms"] = s.LastSeen
+				}
+				if s.StateChanged != 0 {
+					entry["state_changed_at_ms"] = s.StateChanged
+				}
 			}
 			out = append(out, entry)
 		}

@@ -342,7 +342,7 @@ func TestPermissionBlockedDiscoveryAndRecovery(t *testing.T) {
 			blocked.Host, blocked.Permission = "grok", "bypassPermissions"
 			m := request(t, b, from, "ax.send", object{"target": "reviewer", "text": "private review request", "client_message_id": "held"}).(Message)
 			b.dispatch()
-			for _, a := range request(t, b, from, "ax.list", object{}).([]Agent) {
+			for _, a := range request(t, b, from, "ax.list", object{}).([]discoveredAgent) {
 				if a.ID == blocked.ID && (a.State != "permission-blocked" || !a.Online) {
 					t.Fatalf("blocked peer advertised as reachable: %+v", a)
 				}

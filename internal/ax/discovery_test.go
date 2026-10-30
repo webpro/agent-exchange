@@ -121,6 +121,7 @@ func TestListAgentsNamesTheRuntimeItSearched(t *testing.T) {
 	}
 	var in, out bytes.Buffer
 	json.NewEncoder(&in).Encode(packet{JSONRPC: "2.0", ID: raw(1), Method: "tools/call", Params: raw(object{"name": "list_agents", "arguments": object{}})})
+	before := time.Now().UnixMilli()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := Bridge(ctx, dir, file, &in, &out); err != nil {
@@ -141,6 +142,7 @@ func TestListAgentsNamesTheRuntimeItSearched(t *testing.T) {
 		Agents []Agent `json:"agents"`
 		Home   string  `json:"ax_home"`
 		Scope  string  `json:"scope"`
+		At     int64   `json:"snapshot_at_ms"`
 	}
 	if err := json.Unmarshal([]byte(response.Content[0].Text), &result); err != nil {
 		t.Fatalf("list_agents result is not an object: %s", response.Content[0].Text)
@@ -153,5 +155,9 @@ func TestListAgentsNamesTheRuntimeItSearched(t *testing.T) {
 	}
 	if !strings.Contains(result.Scope, "AX_HOME") {
 		t.Fatalf("result does not explain runtime isolation: %q", result.Scope)
+	}
+	// Discovery times are instants; the snapshot is what a model subtracts them from.
+	if result.At < before || result.At > time.Now().UnixMilli() {
+		t.Fatalf("snapshot_at_ms %d is not the time of this listing", result.At)
 	}
 }

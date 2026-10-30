@@ -82,6 +82,8 @@ type peer struct {
 	notice       string
 	noticeRetry  time.Time
 	capabilities *deliveryCapabilities
+	savedState   string
+	stateSince   time.Time
 }
 type serverConn struct {
 	networkWake chan struct{}
@@ -158,6 +160,7 @@ func openBroker(dir string) (*broker, error) {
  CREATE INDEX IF NOT EXISTS message_parent ON messages(coalesce(json_extract(data,'$.in_reply_to'),json_extract(data,'$.resend_of')),json_extract(data,'$.thread_id'));
  CREATE INDEX IF NOT EXISTS message_thread ON messages(json_extract(data,'$.thread_id'));
  CREATE INDEX IF NOT EXISTS queued_expiry ON messages(expires) WHERE state='queued';
+ CREATE INDEX IF NOT EXISTS unresolved_mailbox ON messages(recipient,seq,id,state,created) WHERE state NOT IN ('acknowledged','expired','refused','abandoned');
  COMMIT;`)
 	if e != nil {
 		return fail(e)
@@ -199,6 +202,7 @@ func openBroker(dir string) (*broker, error) {
 		}
 		p.Online = false
 		p.enrolled = time.Now()
+		p.savedState = p.State
 		b.peers[p.ID] = p
 	}
 	e = rows.Err()
@@ -342,6 +346,11 @@ func Serve(ctx context.Context, dir string) error {
 }
 func (b *broker) save(p *peer) error {
 	_, e := b.db.Exec("INSERT INTO agents(id,hash,data,epoch) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,epoch=excluded.epoch", p.ID, p.hash, string(raw(p.Agent)), p.epoch)
+	// Every lifecycle change is saved here. Its time stays in memory, so a
+	// restarted broker knows the saved state but not when it began.
+	if e == nil && p.State != p.savedState {
+		p.savedState, p.stateSince = p.State, time.Now()
+	}
 	return e
 }
 func (b *broker) event(id, state string, epoch int64) error {
@@ -501,6 +510,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 				return nil, e
 			}
 			p.enrolled = time.Now()
+			p.stateSince = p.enrolled // A relaunch can re-enter the same starting state.
 			b.peers[p.ID] = p
 			return p.Agent, nil
 		}
@@ -634,7 +644,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		return b.message(a.MessageID)
 	}
 	if c.agent == "" && method == "ax.inspect" {
-		return b.list(), nil
+		return b.discovery(), nil
 	}
 	if c.agent == "" && method == "ax.inspect_message" {
 		return b.status(a.MessageID)
@@ -745,7 +755,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		p.seen = time.Now()
 		return p.Agent, b.save(p)
 	case "ax.list":
-		return b.list(), nil
+		return b.discovery(), nil
 	case "ax.report_task":
 		return b.reportNetworkTask(p, a.MessageID, a.State)
 	case "ax.pending":

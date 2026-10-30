@@ -672,7 +672,7 @@ func runBridge(ctx context.Context, dir, file string, in io.Reader, out io.Write
 			// A stray AX_HOME gives a session its own broker and its own agents. The
 			// list alone cannot show that, so name the runtime it was read from.
 			if e == nil && method == "ax.list" {
-				result = object{"agents": result, "ax_home": b.dir, "scope": "Same-user, cross-repository routing in this AX_HOME. Missing peer? Compare AX_HOME; separate runtimes are isolated."}
+				result = object{"agents": result, "ax_home": b.dir, "snapshot_at_ms": time.Now().UnixMilli(), "scope": "Same-user, cross-repository routing in this AX_HOME. Missing peer? Compare AX_HOME; separate runtimes are isolated."}
 			}
 			body := string(raw(result))
 			response := object{"isError": e != nil}

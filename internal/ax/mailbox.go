@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 )
 
@@ -34,6 +35,26 @@ type sendReceipt struct {
 	Acknowledged   bool   `json:"acknowledged"`
 	Evidence       string `json:"delivery_evidence"`
 	TaskCompletion string `json:"task_completion"`
+}
+
+// Discovery-only facts for local peers. They sit beside the Agent record, never
+// in it, so stored agents, message senders and the change-hint snapshot cannot
+// carry backlog or clocks.
+type AgentStatus struct {
+	Queued       int    `json:"queued_count"`
+	Pending      int    `json:"unacknowledged_count"`
+	HeadID       string `json:"head_message_id,omitempty"`
+	HeadState    string `json:"head_state,omitempty"`
+	HeadAge      *int64 `json:"head_age_seconds,omitempty"`
+	LastSeen     int64  `json:"last_seen_at_ms,omitempty"`
+	StateChanged int64  `json:"state_changed_at_ms,omitempty"`
+}
+
+// What ax.list and ax.inspect return, as one flat JSON object. Remote peers and
+// a failed mailbox read leave the status nil.
+type discoveredAgent struct {
+	Agent
+	*AgentStatus
 }
 
 // Enroll resets State to "starting" and only ax.lifecycle advances it, so a peer
@@ -172,6 +193,73 @@ func (b *broker) sendResult(q interface{ QueryRow(string, ...any) *sql.Row }, m 
 	}
 	m.Receipt = r
 	return m, nil
+}
+
+func (b *broker) discovery() []discoveredAgent {
+	agents := b.list()
+	out := make([]discoveredAgent, len(agents))
+	for i, a := range agents {
+		out[i].Agent = a
+	}
+	mail, err := b.mailStatus()
+	if err != nil {
+		// The roster is in memory and outlives the mailbox. Nil status means
+		// unknown; zero counts would claim an empty mailbox.
+		fmt.Fprintln(os.Stderr, "AX discovery status:", err)
+		return out
+	}
+	for i := range out {
+		p := b.peers[out[i].ID]
+		if p.Remote != nil {
+			continue
+		}
+		s := mail[p.ID]
+		if s == nil {
+			s = &AgentStatus{}
+		}
+		if !p.seen.IsZero() {
+			s.LastSeen = p.seen.UnixMilli()
+		}
+		// The clock dates the lifecycle state. Offline comes from the connection,
+		// and a permission hold or an inactive bridge begins without a lifecycle
+		// change, so those states carry no time; last_seen_at_ms dates offline.
+		switch out[i].State {
+		case "offline", "inactive", "permission-blocked":
+		default:
+			if !p.stateSince.IsZero() {
+				s.StateChanged = p.stateSince.UnixMilli()
+			}
+		}
+		out[i].AgentStatus = s
+	}
+	return out
+}
+
+// One grouped read for all recipients. With a single min(), SQLite takes the
+// bare columns from the row holding that minimum.
+const mailStatusQuery = `SELECT recipient,sum(state='queued'),count(*),id,state,created,min(seq) FROM messages
+ WHERE state NOT IN ('acknowledged','expired','refused','abandoned') GROUP BY recipient`
+
+func (b *broker) mailStatus() (map[string]*AgentStatus, error) {
+	rows, err := b.db.Query(mailStatusQuery)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	now := time.Now().UnixMilli()
+	out := map[string]*AgentStatus{}
+	for rows.Next() {
+		var recipient string
+		var created, seq int64
+		s := &AgentStatus{}
+		if err = rows.Scan(&recipient, &s.Queued, &s.Pending, &s.HeadID, &s.HeadState, &created, &seq); err != nil {
+			return nil, err
+		}
+		age := max(0, (now-created)/1000)
+		s.HeadAge = &age
+		out[recipient] = s
+	}
+	return out, rows.Err()
 }
 
 type pendingSender struct {

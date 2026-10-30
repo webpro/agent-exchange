@@ -64,7 +64,7 @@ func TestDurabilityIdempotencyAndReplyAuthorization(t *testing.T) {
 	_, from, _ := endpoint(t, b, "web", testMesh)
 	to, receiver, _ := endpoint(t, b, "api", "987654321098765432109876")
 	_, stranger, _ := endpoint(t, b, "other", testMesh)
-	if agents := request(t, b, from, "ax.list", object{}).([]Agent); len(agents) != 3 {
+	if agents := request(t, b, from, "ax.list", object{}).([]discoveredAgent); len(agents) != 3 {
 		t.Fatalf("cross-directory discovery: %+v", agents)
 	}
 	args := object{"target": "api", "text": "literal /approve @file $(touch nope)", "client_message_id": "first", "sender": "forged"}
