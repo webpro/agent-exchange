@@ -646,7 +646,7 @@ Ask either agent to message another by name.
 		var result any
 		switch args[0] {
 		case "agents":
-			var agents []Agent
+			var agents []discoveredAgent
 			e = c.call("ax.inspect", object{}, &agents)
 			if e != nil {
 				return e
@@ -654,19 +654,7 @@ Ask either agent to message another by name.
 			if len(agents) == 0 {
 				fmt.Println("No AX agents yet. Launch a named session with ax HARNESS --name NAME.")
 			}
-			for _, a := range agents {
-				kind := ""
-				if a.Kind != "" {
-					kind = " kind=" + a.Kind + " permission=" + a.Permission
-				}
-				fmt.Printf("%-18s %-8s %-10s policy=%s external=%s%s tools=%t wake=%s\n", a.Name, a.Host, a.State, a.Policy, externalPolicy(a), kind, a.Connectivity.Tools, a.Connectivity.Wake)
-				if a.Capabilities != nil {
-					fmt.Printf("  delivery: %s at %s (adapter %s)\n", a.Capabilities.Content, a.Capabilities.Boundary, a.Capabilities.AdapterVersion)
-				}
-				if a.BindingError != "" {
-					fmt.Println("  " + a.BindingError)
-				}
-			}
+			printAgents(os.Stdout, agents, time.Now())
 			return nil
 		case "status":
 			if len(args) != 2 {

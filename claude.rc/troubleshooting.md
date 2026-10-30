@@ -49,6 +49,10 @@ ax status MESSAGE_ID
 
 Delivery evidence progresses from queued to native handoff, content fetch, and acknowledgment. An acknowledgment records receipt. Ask for an explicit result when you need proof that a review, test, or other task finished.
 
+`ax agents` and `list_agents` show local agents' backlog, oldest unacknowledged message, and why mail waits. `since` (`state_changed_at_ms`) dates the lifecycle state and `seen` (`last_seen_at_ms`) the last bridge heartbeat; a broker restart clears `since` and the cause behind `reason`. `offline`, `inactive` and `permission-blocked` begin without a lifecycle change and show no `since`.
+
+A long `since` on `busy` with a recent `seen` proves a live bridge, not a running turn; check the terminal. Claude's `reason` names a permission prompt's tool or says a question awaits the user.
+
 AX 0.6.1 notifies the sender when queued mail expires or is refused. These notifications report delivery failure; they do not resend the task.
 
 ## Claude tools work, but incoming messages do not wake the agent

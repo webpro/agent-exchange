@@ -3,6 +3,8 @@ package ax
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"time"
 )
 
 // Repeat the complete action/authority boundary with content, not with an
@@ -45,6 +47,55 @@ func compactMessage(m Message, content bool) object {
 		}
 	}
 	return out
+}
+
+func printAgents(w io.Writer, agents []discoveredAgent, now time.Time) {
+	for _, a := range agents {
+		kind := ""
+		if a.Kind != "" {
+			kind = " kind=" + a.Kind + " permission=" + a.Permission
+		}
+		fmt.Fprintf(w, "%-18s %-8s %-10s policy=%s external=%s%s tools=%t wake=%s%s\n", a.Name, a.Host, a.State, a.Policy, externalPolicy(a.Agent), kind, a.Connectivity.Tools, a.Connectivity.Wake, statusColumns(a.AgentStatus, now))
+		if a.Capabilities != nil {
+			fmt.Fprintf(w, "  delivery: %s at %s (adapter %s)\n", a.Capabilities.Content, a.Capabilities.Boundary, a.Capabilities.AdapterVersion)
+		}
+		if a.BindingError != "" {
+			fmt.Fprintln(w, "  "+a.BindingError)
+		}
+		if s := a.AgentStatus; s != nil && s.Reason != "" && a.BindingError == "" {
+			fmt.Fprintln(w, "  reason: "+s.Reason)
+		}
+	}
+}
+
+func statusColumns(s *AgentStatus, now time.Time) string {
+	if s == nil {
+		return ""
+	}
+	out := ""
+	if s.StateChanged != 0 {
+		out += " since=" + compactAge(now.Sub(time.UnixMilli(s.StateChanged)))
+	}
+	if s.LastSeen != 0 {
+		out += " seen=" + compactAge(now.Sub(time.UnixMilli(s.LastSeen)))
+	}
+	out += fmt.Sprintf(" queued=%d unacked=%d", s.Queued, s.Pending)
+	if s.HeadID != "" {
+		out += fmt.Sprintf(" head=%s(%s,%s)", s.HeadID, s.HeadState, compactAge(time.Duration(*s.HeadAge)*time.Second))
+	}
+	return out
+}
+
+func compactAge(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", max(0, int(d.Seconds())))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	}
+	return fmt.Sprintf("%dd", int(d.Hours())/24)
 }
 
 // Only MCP's presentation is compacted. Broker results and explicit status

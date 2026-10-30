@@ -4,11 +4,13 @@ package ax
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -440,6 +442,84 @@ func TestOtherHarnessesReportOnlyTheirLifecycle(t *testing.T) {
 		if a := listedAgent(t, agents, host); a["state"] != "blocked" || a["reason"] != "Recipient is blocked; mail remains queued." {
 			t.Fatalf("%s: %v %v", host, a["state"], a["reason"])
 		}
+	}
+}
+
+func TestAgentsCommandPrintsStatus(t *testing.T) {
+	dir := startTestServer(t)
+	t.Setenv("AX_HOME", dir)
+	session := func(name string) Session {
+		return Session{ID: randomID("agt_"), Secret: randomID("") + randomID(""), Name: name, Host: "codex", Mesh: testMesh, Native: uuid()}
+	}
+	web := connectDiscoveryPeer(t, dir, session("web"))
+	connectDiscoveryPeer(t, dir, session("api"))
+	conflicted := connectDiscoveryPeer(t, dir, session("conflicted"))
+	admin, err := dial(socketPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.close()
+	if err = admin.call("ax.policy", object{"target": "api", "policy": "hold"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	var first, second Message
+	if err = web.call("ax.send", object{"target": "api", "text": "one", "client_message_id": "one"}, &first); err != nil {
+		t.Fatal(err)
+	}
+	if err = web.call("ax.send", object{"target": "api", "text": "two", "client_message_id": "two"}, &second); err != nil {
+		t.Fatal(err)
+	}
+	if err = conflicted.call("ax.presence", object{"binding_error": "AX name belongs to another conversation"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite3", filepath.Join(dir, "mailbox.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err = db.Exec("UPDATE messages SET created=? WHERE id=?", time.Now().Add(-90*time.Second).UnixMilli(), first.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer read.Close()
+	stdout := os.Stdout
+	os.Stdout = write
+	err = Main([]string{"agents"})
+	os.Stdout = stdout
+	write.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(data)
+
+	api := "(?m)^api                codex    ready      policy=hold external=refuse tools=true wake=native since=\\d+s seen=\\d+s queued=2 unacked=2 head=" + first.ID + `\(queued,1m\)$` + "\n  reason: Recipient policy is hold\\.$"
+	if !regexp.MustCompile(api).MatchString(out) {
+		t.Fatalf("api lines do not match %s:\n%s", api, out)
+	}
+	idle := "(?m)^web                codex    ready      policy=accept external=refuse tools=true wake=native since=\\d+s seen=\\d+s queued=0 unacked=0$"
+	if !regexp.MustCompile(idle).MatchString(out) {
+		t.Fatalf("web line does not match %s:\n%s", idle, out)
+	}
+	// The conflict prints its own line, which is already the peer's reason.
+	if strings.Count(out, "AX name belongs to another conversation") != 1 || strings.Contains(out, "binding conflict") {
+		t.Fatalf("binding conflict not printed exactly once:\n%s", out)
+	}
+}
+
+// A newer ax against a broker that predates discovery status keeps the old line.
+func TestAgentsCommandPrintsRosterWithoutStatus(t *testing.T) {
+	var out bytes.Buffer
+	printAgents(&out, []discoveredAgent{{Agent: Agent{Name: "web", Host: "codex", State: "ready", Policy: "accept"}}}, time.Now())
+	if want := "web                codex    ready      policy=accept external=refuse tools=false wake=\n"; out.String() != want {
+		t.Fatalf("got %q, want %q", out.String(), want)
 	}
 }
 

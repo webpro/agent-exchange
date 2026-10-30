@@ -62,6 +62,22 @@ func TestCompactResultsPreserveIdentityAndBlockingEvidence(t *testing.T) {
 	}
 }
 
+func TestCompactAge(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		-time.Second:     "0s",
+		59 * time.Second: "59s",
+		90 * time.Second: "1m",
+		59 * time.Minute: "59m",
+		5 * time.Hour:    "5h",
+		47 * time.Hour:   "47h",
+		49 * time.Hour:   "2d",
+	} {
+		if got := compactAge(d); got != want {
+			t.Fatalf("%s: got %s, want %s", d, got, want)
+		}
+	}
+}
+
 func TestCompactWakeAndPolicyRefresh(t *testing.T) {
 	for host := range harnesses {
 		wake := wakeText(host, "msg_fixture")
