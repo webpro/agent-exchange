@@ -301,7 +301,7 @@ func TestSnapshotSeparatesNeverStartedFromClosedAndInactive(t *testing.T) {
 		want       string
 		reason     string
 	}{
-		{"enrolled but never started", false, false, false, "unstarted", "never started"},
+		{"enrolled before startup", false, false, false, "unstarted", "has not started"},
 		{"ran before and is now closed", false, true, true, "offline", "offline"},
 		{"connected and still booting", true, false, false, "starting", "starting"},
 		{"running but messaging never activated", true, true, false, "inactive", "not activated AX messaging"},

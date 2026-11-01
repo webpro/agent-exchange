@@ -125,6 +125,9 @@ func compactToolResult(method string, result any, key string) any {
 				if s.StateChanged != 0 {
 					entry["state_changed_at_ms"] = s.StateChanged
 				}
+				if s.Reason != "" {
+					entry["reason"] = s.Reason
+				}
 			}
 			out = append(out, entry)
 		}

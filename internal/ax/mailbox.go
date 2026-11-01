@@ -1,10 +1,12 @@
 package ax
 
 import (
+	"cmp"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"time"
 )
 
@@ -48,6 +50,7 @@ type AgentStatus struct {
 	HeadAge      *int64 `json:"head_age_seconds,omitempty"`
 	LastSeen     int64  `json:"last_seen_at_ms,omitempty"`
 	StateChanged int64  `json:"state_changed_at_ms,omitempty"`
+	Reason       string `json:"reason,omitempty"`
 }
 
 // What ax.list and ax.inspect return, as one flat JSON object. Remote peers and
@@ -134,7 +137,30 @@ func queueReason(to, from *peer) string {
 		}
 		return "Awaiting a permitted transfer to the paired broker; network acceptance and native delivery are not confirmed."
 	}
-	snapshot := agentSnapshot(to)
+	hold := recipientHold(to, agentSnapshot(to))
+	switch {
+	case hold != "":
+		return hold
+	case from == nil:
+		return "Sender permission state is unavailable; delivery remains blocked."
+	case !safe(from):
+		return permissionBlockReason("Sender", from)
+	}
+	return cmp.Or(recipientWait(to), "Awaiting the next permitted FIFO handoff; readiness is only a snapshot.")
+}
+
+// Why this local peer will not take mail now, whoever sends it. Discovery passes
+// the snapshot it lists, so the reason cannot disagree with the listed state.
+func agentReason(p *peer, snapshot Agent) string {
+	// Repeating the error beside binding_error can push a full roster past maxFrame.
+	if p.BindingError != "" {
+		return "Recipient has a binding conflict; see binding_error. Mail remains queued."
+	}
+	return cmp.Or(recipientHold(p, snapshot), recipientWait(p))
+}
+
+// Delivery checks these before the sender, and recipientWait after it.
+func recipientHold(to *peer, snapshot Agent) string {
 	switch {
 	case snapshot.BindingError != "":
 		return snapshot.BindingError
@@ -143,7 +169,7 @@ func queueReason(to, from *peer) string {
 	case to.Policy != "accept":
 		return "Recipient policy is " + to.Policy + "."
 	case snapshot.State == "unstarted":
-		return "Recipient enrolled but its session never started; mail remains queued."
+		return "Recipient enrolled but its session has not started; mail remains queued."
 	case !snapshot.Online:
 		return "Recipient is offline; mail remains queued."
 	case snapshot.State == "inactive":
@@ -151,20 +177,57 @@ func queueReason(to, from *peer) string {
 	case snapshot.State == "starting" || to.Native == "":
 		return "Recipient is starting; messaging is not ready."
 	case snapshot.State == "blocked":
-		return "Recipient is blocked; mail remains queued."
+		return blockedReason(to.cause)
 	case !safe(to):
 		return permissionBlockReason("Recipient", to)
-	case from == nil:
-		return "Sender permission state is unavailable; delivery remains blocked."
-	case !safe(from):
-		return permissionBlockReason("Sender", from)
+	}
+	return ""
+}
+
+func recipientWait(to *peer) string {
+	switch {
 	case to.DeliveryMode == "manual":
 		return "Recipient has no automatic wake; it can call check_inbox on its next user turn."
 	case boundaryWait(to):
 		return "Recipient's native adapter reports busy; waiting for its idle boundary."
-	default:
-		return "Awaiting the next permitted FIFO handoff; readiness is only a snapshot."
 	}
+	return ""
+}
+
+func blockedReason(c stateCause) string {
+	switch {
+	case c.Kind == "permission" && c.Tool != "":
+		return "Recipient is blocked at a permission prompt for " + c.Tool + "; mail remains queued."
+	case c.Kind == "permission":
+		return "Recipient is blocked at a permission prompt; mail remains queued."
+	case c.Kind == "question":
+		return "Recipient is waiting for the user's answer to a question; mail remains queued."
+	}
+	return "Recipient is blocked; mail remains queued."
+}
+
+// What a native hook can name about a blocked turn. Tool names reach every local
+// peer through discovery. An unusable cause is dropped, never rejected, because
+// the state report it travels with drives delivery.
+type stateCause struct {
+	Kind string `json:"kind"`
+	Tool string `json:"tool,omitempty"`
+}
+
+var validToolName = regexp.MustCompile(`^[a-zA-Z0-9_.:-]{1,128}$`)
+
+func reportedCause(state string, c *stateCause) stateCause {
+	switch {
+	case state != "blocked" || c == nil:
+		return stateCause{}
+	case c.Kind == "question":
+		return stateCause{Kind: c.Kind}
+	case c.Kind == "permission" && validToolName.MatchString(c.Tool):
+		return *c
+	case c.Kind == "permission":
+		return stateCause{Kind: c.Kind}
+	}
+	return stateCause{}
 }
 
 func permissionBlockReason(role string, p *peer) string {
@@ -230,6 +293,7 @@ func (b *broker) discovery() []discoveredAgent {
 				s.StateChanged = p.stateSince.UnixMilli()
 			}
 		}
+		s.Reason = agentReason(p, out[i].Agent)
 		out[i].AgentStatus = s
 	}
 	return out

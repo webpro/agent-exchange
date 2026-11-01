@@ -84,6 +84,7 @@ type peer struct {
 	capabilities *deliveryCapabilities
 	savedState   string
 	stateSince   time.Time
+	cause        stateCause
 }
 type serverConn struct {
 	networkWake chan struct{}
@@ -424,6 +425,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		Native          string                `json:"native_session_id"`
 		Permission      string                `json:"permission_mode"`
 		State           string                `json:"state"`
+		Cause           *stateCause           `json:"state_cause"`
 		Policy          string                `json:"policy"`
 		Target          string                `json:"target"`
 		Text            string                `json:"text"`
@@ -500,6 +502,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 			}
 			p.LaunchID = s.LaunchID
 			p.State = "starting"
+			p.cause = stateCause{}
 			p.BindingError = ""
 			p.Permission = "unknown"
 			p.AllowBypass = s.AllowBypass
@@ -600,7 +603,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		if a.LaunchID != p.LaunchID {
 			return nil, errors.New("AX hook belongs to an earlier launch")
 		}
-		before := p.Agent
+		before, beforeCause := p.Agent, p.cause
 		// Native resume/picker selection chooses the ID after enrollment. The
 		// credentialed lifecycle hook may establish its first binding.
 		if p.Native == "" && nativeID(p.Host, a.Native) {
@@ -620,12 +623,13 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		}
 		if p.BindingError == "" && (a.State == "ready" || a.State == "busy" || a.State == "blocked") {
 			p.State = a.State
+			p.cause = reportedCause(a.State, a.Cause)
 		}
 		if p.Agent == before {
 			return object{"ok": true}, nil
 		}
 		if err := b.save(p); err != nil {
-			p.Agent = before
+			p.Agent, p.cause = before, beforeCause
 			return nil, err
 		}
 		if p.conn != nil && p.conn.lifecycleEvents && !p.ready {
@@ -751,6 +755,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 				return nil, errors.New("invalid presence state")
 			}
 			p.State = a.State
+			p.cause = stateCause{}
 		}
 		p.seen = time.Now()
 		return p.Agent, b.save(p)

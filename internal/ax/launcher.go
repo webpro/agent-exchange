@@ -455,21 +455,27 @@ func Hook(dir, file string, in io.Reader, launch ...string) error {
 	}
 	lock.Close()
 	state := "busy"
+	var cause *stateCause
 	switch input.Event {
 	case "SessionStart", "Stop":
 		state = "ready"
 	case "PermissionRequest":
 		state = "blocked"
+		cause = &stateCause{Kind: "permission", Tool: input.Tool}
 	}
 	if input.Tool == "AskUserQuestion" {
 		state = "blocked"
+		cause = nil
+		if input.Event != "PostToolUse" { // The answer has arrived; the state stays until the next event.
+			cause = &stateCause{Kind: "question"}
+		}
 	}
 	c, e := dial(socketPath(dir))
 	if e != nil {
 		return e
 	}
 	defer c.close()
-	return c.call("ax.lifecycle", object{"agent_id": s.ID, "secret": s.Secret, "native_session_id": input.Session, "launch_id": s.LaunchID, "permission_mode": input.Permission, "state": state}, nil)
+	return c.call("ax.lifecycle", object{"agent_id": s.ID, "secret": s.Secret, "native_session_id": input.Session, "launch_id": s.LaunchID, "permission_mode": input.Permission, "state": state, "state_cause": cause}, nil)
 }
 
 func bindingConflict(s Session, actual string) error {
