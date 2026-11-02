@@ -353,6 +353,7 @@ type pendingMessage struct {
 	Preview      string        `json:"preview,omitempty"`
 	Evidence     string        `json:"delivery_evidence"`
 	BlockedBy    string        `json:"blocked_by_message_id,omitempty"`
+	SupersededBy string        `json:"superseded_by,omitempty"`
 }
 
 type pendingPage struct {
@@ -411,5 +412,13 @@ func (b *broker) pending(p *peer, after int64) (pendingPage, error) {
 		}
 		out.Messages = append(out.Messages, item)
 	}
-	return out, rows.Err()
+	if err = rows.Err(); err != nil {
+		return out, err
+	}
+	// The listing holds the only connection until its rows are closed.
+	rows.Close()
+	for i, item := range out.Messages {
+		out.Messages[i].SupersededBy = b.successor(item.ID, item.Sender.ID, p.ID)
+	}
+	return out, nil
 }

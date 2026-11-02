@@ -51,7 +51,7 @@ func endpoint(t *testing.T, b *broker, name, mesh string) (Session, *serverConn,
 	x, y := net.Pipe()
 	c := &serverConn{Conn: x}
 	t.Cleanup(func() { x.Close(); y.Close() })
-	request(t, b, c, "ax.connect", object{"version": "1", "agent_id": s.ID, "secret": s.Secret})
+	request(t, b, c, "ax.connect", object{"version": "1", "agent_id": s.ID, "secret": s.Secret, "corrections": true})
 	request(t, b, c, "ax.presence", object{"native_session_id": s.Native, "permission_mode": "read-only", "state": "ready"})
 	request(t, b, c, "ax.ready", object{})
 	return s, c, y

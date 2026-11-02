@@ -60,6 +60,8 @@ type Message struct {
 	Text            string           `json:"text"`
 	Parent          string           `json:"in_reply_to,omitempty"`
 	ResendOf        string           `json:"resend_of,omitempty"`
+	Supersedes      string           `json:"supersedes,omitempty"`
+	SupersededBy    string           `json:"superseded_by,omitempty"` // Computed when read, never stored in the mailbox.
 	Thread          string           `json:"thread_id,omitempty"`
 	Seq             int64            `json:"recipient_seq"`
 	Created         int64            `json:"created_at_ms"`
@@ -71,6 +73,7 @@ type Message struct {
 }
 type peer struct {
 	relayGuidance             bool
+	corrections               bool // The connected bridge renders supersedes and superseded_by.
 	handoffID, handoffMessage string
 	Agent
 	hash            string
@@ -165,6 +168,7 @@ func openBroker(dir string) (*broker, error) {
  CREATE INDEX IF NOT EXISTS active_agents ON agents(id) WHERE json_extract(data,'$.state')!='exited';
  CREATE INDEX IF NOT EXISTS message_parent ON messages(coalesce(json_extract(data,'$.in_reply_to'),json_extract(data,'$.resend_of')),json_extract(data,'$.thread_id'));
  CREATE INDEX IF NOT EXISTS message_thread ON messages(json_extract(data,'$.thread_id'));
+ CREATE INDEX IF NOT EXISTS message_supersedes ON messages(json_extract(data,'$.supersedes')) WHERE json_extract(data,'$.supersedes') IS NOT NULL;
  CREATE INDEX IF NOT EXISTS queued_expiry ON messages(expires) WHERE state='queued';
  CREATE INDEX IF NOT EXISTS unresolved_mailbox ON messages(recipient,seq,id,state,created) WHERE state NOT IN ('acknowledged','expired','refused','abandoned');
  COMMIT;`)
@@ -438,6 +442,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		Policy             string                `json:"policy"`
 		Target             string                `json:"target"`
 		Text               string                `json:"text"`
+		Replaces           string                `json:"replaces"`
 		ClientID           string                `json:"client_message_id"`
 		MessageID          string                `json:"message_id"`
 		AfterMessage       string                `json:"after_message_id"`
@@ -447,6 +452,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		AfterSeq           json.RawMessage       `json:"after_seq"`
 		Mesh               string                `json:"mesh"`
 		LifecycleEvents    bool                  `json:"lifecycle_events"`
+		Corrections        bool                  `json:"corrections"`
 		Capabilities       *deliveryCapabilities `json:"delivery_capabilities"`
 	}
 	if e := json.Unmarshal(params, &a); e != nil {
@@ -465,7 +471,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		return b.networkRequest(method, params)
 	}
 	if method == "ax.ping" {
-		return object{"version": "1", "local_attach": true, "relay": true, "network_mailbox": true}, nil
+		return object{"version": "1", "local_attach": true, "relay": true, "network_mailbox": true, "replaces": true}, nil
 	}
 	if method == "ax.enroll" {
 		s := a.Session
@@ -603,6 +609,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		c.lifecycleEvents = a.LifecycleEvents
 		c.peerEvents = a.PeerEvents
 		p.relayGuidance = supportsRelay
+		p.corrections = a.Corrections
 		p.capabilities = a.Capabilities
 		p.handoffID, p.handoffMessage = "", ""
 		return object{"agent_id": p.ID, "lease_epoch": p.epoch, "delivery_capabilities": p.capabilities}, nil
@@ -806,7 +813,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		if err != nil {
 			return nil, refuse("invalid_ttl", err.Error(), nil)
 		}
-		return b.send(p, a.Target, a.MessageID, a.Text, a.ClientID, int(ttl), method, a.Provenance, a.Data)
+		return b.send(p, a.Target, a.MessageID, a.Text, a.ClientID, int(ttl), method, a.Replaces, a.Provenance, a.Data)
 	case "ax.get_message", "ax.ack", "ax.receipt", "ax.status":
 		m, e := b.message(a.MessageID)
 		if e != nil {
@@ -856,6 +863,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 					return nil, e
 				}
 			}
+			m.SupersededBy = b.successor(m.ID, m.Sender.ID, m.Recipient)
 			return m, nil
 		}
 		state := a.Receipt
@@ -943,11 +951,50 @@ func (b *broker) message(id string) (Message, error) {
 	m.State = state
 	return m, nil
 }
+
+// replaces names the caller's own earlier message to the same local recipient,
+// one that has not ended. The link does not cross machines.
+func (b *broker) replaceable(p, to *peer, replaces string) error {
+	if to.Remote != nil {
+		return refuse("invalid_replaces", "replaces does not reach a paired machine; send the correction without replaces", nil)
+	}
+	m, err := b.message(replaces)
+	if errors.Is(err, errMessageNotFound) {
+		return refuse("invalid_replaces", "message "+replaces+" not found", nil)
+	}
+	if err != nil {
+		return err
+	}
+	if m.Sender.ID != p.ID || m.Recipient != to.ID {
+		return refuse("invalid_replaces", "replaces must name your own earlier message to the same recipient", nil)
+	}
+	if m.State == "expired" || m.State == "refused" || m.State == "abandoned" {
+		return refuse("invalid_replaces", "message "+replaces+" is already "+m.State+" and cannot be replaced", nil)
+	}
+	return nil
+}
+
+// The newest live message from the same sender to the same recipient that
+// replaces this one. It is computed whenever a message is read, so it seeks
+// its own index rather than the planner's choice of the recipient's mailbox.
+const successorQuery = `SELECT id FROM messages INDEXED BY message_supersedes WHERE json_extract(data,'$.supersedes')=? AND sender=? AND recipient=?
+ AND state NOT IN ('expired','refused','abandoned') AND NOT (state='queued' AND expires<=?) ORDER BY seq DESC LIMIT 1`
+
+func (b *broker) successor(id, sender, recipient string) string {
+	var next string
+	// A queued replacement past its deadline will expire before it is offered.
+	if b.db.QueryRow(successorQuery, id, sender, recipient, time.Now().UnixMilli()).Scan(&next) != nil {
+		return ""
+	}
+	return next
+}
+
 func (b *broker) status(id string) (any, error) {
 	m, e := b.message(id)
 	if e != nil {
 		return nil, e
 	}
+	m.SupersededBy = b.successor(m.ID, m.Sender.ID, m.Recipient)
 	rows, e := b.db.Query("SELECT state,at,epoch FROM events WHERE message=? ORDER BY id", id)
 	if e != nil {
 		return nil, e
@@ -992,11 +1039,11 @@ func safe(p *peer) bool {
 	}
 	return false
 }
-func (b *broker) send(p *peer, target, parent, text, key string, ttl int, method string, structured ...json.RawMessage) (any, error) {
-	return b.sendImported(p, target, parent, text, key, ttl, method, nil, structured...)
+func (b *broker) send(p *peer, target, parent, text, key string, ttl int, method, replaces string, structured ...json.RawMessage) (any, error) {
+	return b.sendImported(p, target, parent, text, key, ttl, method, replaces, nil, structured...)
 }
 
-func (b *broker) sendImported(p *peer, target, parent, text, key string, ttl int, method string, incoming *networkImport, structured ...json.RawMessage) (any, error) {
+func (b *broker) sendImported(p *peer, target, parent, text, key string, ttl int, method, replaces string, incoming *networkImport, structured ...json.RawMessage) (any, error) {
 	var provenance, data json.RawMessage
 	if len(structured) > 0 {
 		provenance = structured[0]
@@ -1017,6 +1064,12 @@ func (b *broker) sendImported(p *peer, target, parent, text, key string, ttl int
 	if ttl < 1 || ttl > maxTTL {
 		return nil, refuse("invalid_ttl", fmt.Sprintf("TTL must be between 1 and %d seconds", maxTTL), nil)
 	}
+	if replaces != "" && (reply || resend) {
+		return nil, refuse("invalid_replaces", "replaces is only for send_message and follow_up", nil)
+	}
+	if replaces != "" && !validID.MatchString(replaces) {
+		return nil, refuse("invalid_replaces", "replaces must be a message ID", nil)
+	}
 	if !resend {
 		if err := validateRelayContent(p, provenance, data); err != nil {
 			return nil, refuse("invalid_content", err.Error(), nil)
@@ -1026,6 +1079,9 @@ func (b *broker) sendImported(p *peer, target, parent, text, key string, ttl int
 	if len(provenance) > 0 || len(data) > 0 {
 		hashInputs = append(hashInputs, provenance, data)
 	}
+	if replaces != "" {
+		hashInputs = append(hashInputs, replaces)
+	}
 	hash := digest(string(raw(hashInputs)))
 	if resend {
 		hash = digest(string(raw([]any{method, parent, ttl})))
@@ -1033,6 +1089,9 @@ func (b *broker) sendImported(p *peer, target, parent, text, key string, ttl int
 		hashInputs = []any{method, parent, text, ttl}
 		if len(provenance) > 0 || len(data) > 0 {
 			hashInputs = append(hashInputs, provenance, data)
+		}
+		if replaces != "" {
+			hashInputs = append(hashInputs, replaces)
 		}
 		hash = digest(string(raw(hashInputs)))
 	}
@@ -1063,7 +1122,7 @@ func (b *broker) sendImported(p *peer, target, parent, text, key string, ttl int
 	var networkParent *Message
 	var to *peer
 	depth := 0
-	resendOf, thread := "", ""
+	resendOf, thread, supersedes := "", "", replaces
 	if resend {
 		m, err := b.message(parent)
 		if err != nil {
@@ -1080,6 +1139,8 @@ func (b *broker) sendImported(p *peer, target, parent, text, key string, ttl int
 			return nil, e
 		}
 		text, parent, depth, resendOf = m.Text, m.Parent, m.Depth, m.ID
+		// A resent replacement still replaces what the expired attempt did.
+		supersedes = m.Supersedes
 		provenance, data = m.Provenance, m.Data
 		if err := validateRelayContent(p, provenance, data); err != nil {
 			return nil, refuse("invalid_content", err.Error(), nil)
@@ -1157,6 +1218,17 @@ func (b *broker) sendImported(p *peer, target, parent, text, key string, ttl int
 	if to.Policy == "refuse" {
 		return nil, refuse("recipient_refuses", "recipient refuses messages", nil)
 	}
+	if replaces != "" {
+		if e = b.replaceable(p, to, replaces); e != nil {
+			return nil, e
+		}
+	}
+	// A replacement and a resend of one both carry the link. An offline recipient
+	// relaunches with the installed binary; a running session from before
+	// corrections would show the earlier message as current.
+	if supersedes != "" && to.conn != nil && !to.corrections {
+		return nil, refuse("invalid_replaces", "the recipient's running session predates corrections and would show the earlier message as current; send the correction without replaces, or have its owner relaunch it", nil)
+	}
 	if len(provenance) > 0 {
 		if ok, reason := admitsExternal(to, provenance); !ok {
 			return nil, &rpcError{Code: externalPolicyCode, Message: fmt.Sprintf("external policy %s: %s", externalPolicy(to.Agent), reason), Data: object{"target": to.ID, "external": externalPolicy(to.Agent), "reason": reason}}
@@ -1204,7 +1276,7 @@ func (b *broker) sendImported(p *peer, target, parent, text, key string, ttl int
 	if thread == "" {
 		thread = id
 	}
-	m := Message{ID: id, Thread: thread, Sender: p.Agent, Recipient: to.ID, Text: text, Provenance: provenance, Data: data, Parent: parent, ResendOf: resendOf, Seq: seq, Created: now.UnixMilli(), Expires: now.Add(time.Duration(ttl) * time.Second).UnixMilli(), Depth: depth, State: "queued"}
+	m := Message{ID: id, Thread: thread, Sender: p.Agent, Recipient: to.ID, Text: text, Provenance: provenance, Data: data, Parent: parent, ResendOf: resendOf, Supersedes: supersedes, Seq: seq, Created: now.UnixMilli(), Expires: now.Add(time.Duration(ttl) * time.Second).UnixMilli(), Depth: depth, State: "queued"}
 	if incoming != nil {
 		m.Expires = incoming.Expires
 		m.NetworkOrigin = &incoming.Origin
@@ -1294,6 +1366,7 @@ func (b *broker) dispatch() {
 			}
 			m.State = "handoff_started"
 			m.HandoffID = randomID("handoff_")
+			m.SupersededBy = b.successor(m.ID, m.Sender.ID, m.Recipient)
 			p.handoffID, p.handoffMessage = m.HandoffID, m.ID
 			if p.conn.send(packet{Method: "ax.delivery.offer", Params: raw(m)}) != nil {
 				b.event(id, "delivery_uncertain", p.epoch)

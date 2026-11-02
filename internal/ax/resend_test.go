@@ -64,7 +64,7 @@ func TestResendPreservesContentHistoryAndIdempotency(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.db.Close()
-	again, err := reopened.send(reopened.peers[s.ID], "", original.ID, "", "retry", 172800, "ax.resend")
+	again, err := reopened.send(reopened.peers[s.ID], "", original.ID, "", "retry", 172800, "ax.resend", "")
 	if err != nil || again.(Message).ID != resent.ID {
 		t.Fatalf("restart duplicated attempt: %v %v", again, err)
 	}

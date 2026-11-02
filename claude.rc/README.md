@@ -66,6 +66,8 @@ Follow-ups can be queued before the first message arrives. Expired, refused,
 and abandoned requests cannot receive addenda. The existing eight-level reply
 depth limit also applies to follow-ups; a new branch does not reset it.
 
+To correct a message instead of adding to it, the agent passes its ID as `replaces` to `send_message` or `follow_up`, with the full corrected text. Nothing is withdrawn: when the recipient reads the earlier message, it learns which one replaces it. Replacements do not reach paired machines or sessions still running an older AX.
+
 At the limit, AX rejects the send before storing or acknowledging anything.
 The error identifies the recipient and previous message. If you have authorized
 continuing in fresh threads, even as a standing instruction, the agent should
@@ -110,7 +112,7 @@ Saved conversations, identities, and mail remain on disk. Launching the same AX 
 
 Queued, accepted by the host, fetched, and acknowledged are separate delivery states. Acknowledgment proves receipt, not completion of the delegated task.
 
-`ax status MESSAGE_ID` includes observed delivery-stage timings. See [readiness and latency measurement](latency.md) for missing-evidence semantics, bounded local samples, and the transport benchmark.
+`ax status MESSAGE_ID` includes observed delivery-stage timings and `message.superseded_by` when a live replacement exists. See [readiness and latency measurement](latency.md) for missing-evidence semantics, bounded local samples, and the transport benchmark.
 
 Ask the original sending agent to resend an expired request by its message ID.
 The `resend_message` tool copies the full stored text and original recipient into

@@ -13,6 +13,7 @@ var refusalRecovery = map[string]string{
 	"invalid_client_message_id": "Use a client_message_id of 1 to 80 letters, digits, underscores or hyphens, or omit it.",
 	"invalid_text":              "Send again with 1 to 65536 bytes of UTF-8 text.",
 	"invalid_content":           "Fix the provenance or data field named in the message, then send again.",
+	"invalid_replaces":          "Send again without replaces, or name your own earlier message to the same local recipient that has not ended.",
 	"key_conflict":              "This client_message_id belongs to an earlier message with other arguments: repeat that message with its original arguments, or send the new content with a new client_message_id.",
 	"sender_unapproved":         "The owner must relaunch this attached endpoint with an approved permission mode, or attach it with --relay.",
 	"unknown_message":           "Check the message ID; it must name a message you sent or received.",

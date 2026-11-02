@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -46,6 +47,9 @@ func (b *bridge) toolCall(ctx context.Context, meta json.RawMessage, method stri
 		if err == nil {
 			err = b.activateClient(attemptCtx, c)
 		}
+		if replaces, _ := args["replaces"].(string); err == nil && replaces != "" {
+			err = requireFeature(attemptCtx, c, "replaces")
+		}
 		if err == nil {
 			err = c.callContext(attemptCtx, method, args, out)
 			var transport *transportError
@@ -71,6 +75,19 @@ func (b *bridge) toolCall(ctx context.Context, meta json.RawMessage, method stri
 		b.invalidate(c)
 	}
 	return &requestFailure{cause: err, submitted: submitted, lost: lost}
+}
+
+// A request field that an older broker would silently ignore needs the running
+// broker to list it in ax.ping; the tool list itself never changes.
+func requireFeature(ctx context.Context, c *client, feature string) error {
+	var features map[string]any
+	if err := c.callContext(ctx, "ax.ping", object{}, &features); err != nil {
+		return err
+	}
+	if features[feature] != true {
+		return fmt.Errorf("running broker does not support %s; finish the broker update before using it", feature)
+	}
+	return nil
 }
 
 func toolFailure(err error, args object) object {

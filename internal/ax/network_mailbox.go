@@ -160,7 +160,7 @@ func (b *broker) networkReceive(alias string, envelope networkEnvelope) (Message
 		}
 	}
 	options := &networkImport{Expires: envelope.Expires, Hash: digest(string(raw(envelope))), Origin: networkOrigin{Fingerprint: networkFingerprint(paired.Card), MessageID: envelope.ID}, ParentRemoteID: envelope.ParentSourceID}
-	result, err := b.sendImported(from, to.ID, envelope.Parent, envelope.Text, envelope.ID, defaultTTL, method, options, envelope.Provenance, envelope.Data)
+	result, err := b.sendImported(from, to.ID, envelope.Parent, envelope.Text, envelope.ID, defaultTTL, method, "", options, envelope.Provenance, envelope.Data)
 	if err != nil {
 		return Message{}, err
 	}

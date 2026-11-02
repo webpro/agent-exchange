@@ -61,6 +61,8 @@ task completion. Send receipts and `delivery_status` report `task_completion` as
 `unknown`. Retrying the same request returns the same message and expiry, with an
 updated readiness and delivery snapshot.
 
+`delivery_status` includes `message.superseded_by` when a live replacement exists, including after acknowledgment. The field is computed when read; it does not change the recorded delivery state or prove which task the recipient performed.
+
 ## Choose an expiry
 
 Both send and reply accept the optional integer `ttl_seconds`. Omitted values

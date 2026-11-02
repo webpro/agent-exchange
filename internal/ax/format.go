@@ -27,10 +27,27 @@ func guidanceFor(m Message) string {
 	return fmt.Sprintf(relayGuidance, m.Sender.Name, p.Origin)
 }
 
+// Local peer mail says what a correction means for its reader. Relayed
+// external mail keeps only the IDs, since its text is never instructions.
+func replacementGuidance(m Message) string {
+	if len(m.Provenance) > 0 {
+		return ""
+	}
+	out := ""
+	if m.SupersededBy != "" {
+		out += "Message " + m.SupersededBy + " replaces this one. Acknowledge this one and act on " + m.SupersededBy + " instead. "
+	}
+	// Within a chain, only the newest message asks to be acted on.
+	if m.Supersedes != "" && m.SupersededBy == "" {
+		out += "This message replaces " + m.Supersedes + "; if you already acted on " + m.Supersedes + ", adjust to this one. "
+	}
+	return out
+}
+
 func compactMessage(m Message, content bool) object {
 	out := object{"message_id": m.ID, "thread_id": m.Thread, "status": m.State,
 		"created_at_ms": m.Created, "expires_at_ms": m.Expires}
-	for key, value := range map[string]string{"in_reply_to": m.Parent, "resend_of": m.ResendOf} {
+	for key, value := range map[string]string{"in_reply_to": m.Parent, "resend_of": m.ResendOf, "supersedes": m.Supersedes, "superseded_by": m.SupersededBy} {
 		if value != "" {
 			out[key] = value
 		}
@@ -38,7 +55,7 @@ func compactMessage(m Message, content bool) object {
 	if content {
 		out["sender"] = pendingSender{m.Sender.ID, m.Sender.Name, m.Sender.Host, m.Sender.Kind}
 		out["recipient_id"], out["text"], out["expires_at_ms"] = m.Recipient, m.Text, m.Expires
-		out["guidance"] = guidanceFor(m)
+		out["guidance"] = replacementGuidance(m) + guidanceFor(m)
 		if len(m.Provenance) > 0 {
 			out["provenance"] = m.Provenance
 		}

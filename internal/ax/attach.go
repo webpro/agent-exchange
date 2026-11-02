@@ -231,6 +231,7 @@ func (b *broker) checkInbox(p *peer) (any, error) {
 		return nil, err
 	}
 	m.State = "content_served"
+	m.SupersededBy = b.successor(m.ID, m.Sender.ID, m.Recipient)
 	return object{"message": m}, nil
 }
 

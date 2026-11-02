@@ -126,6 +126,7 @@ func (b *broker) thread(p *peer, id, after string) (threadPage, error) {
 			return out, err
 		}
 		item := threadMessage{Message: m}
+		item.SupersededBy = b.successor(m.ID, m.Sender.ID, m.Recipient)
 		item.Thread = root
 		if item.Sender.ID != p.ID {
 			sender, err := b.messagePeer(b.db, item.Sender.ID)
