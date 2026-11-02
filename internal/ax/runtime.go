@@ -83,7 +83,22 @@ func dataDir() (string, error) {
 	if e = privateDir(p); e != nil {
 		return "", e
 	}
+	ignoreRuntimeState(p)
 	return p, nil
+}
+func ignoreRuntimeState(dir string) {
+	if _, err := os.Lstat(filepath.Join(dir, ".git")); !os.IsNotExist(err) {
+		return
+	}
+	path := filepath.Join(dir, ".gitignore")
+	f, err := privateFile(path, syscall.O_CREAT|syscall.O_EXCL|syscall.O_WRONLY)
+	if err != nil {
+		return
+	}
+	_, err = f.WriteString("*\n")
+	if errors.Join(err, f.Close()) != nil {
+		os.Remove(path)
+	}
 }
 func privateDir(p string) error {
 	// Check existing components before creating anything. OS-provided /tmp aliases

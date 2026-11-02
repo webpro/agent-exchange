@@ -123,6 +123,8 @@ FIFO orders native handoffs. Once a host accepts a message, later mail can proce
 
 State lives in a private `.ax` directory under your home directory. `AX_HOME` selects another private directory, useful for isolated tests. Terminal message records are retained for seven days. Unresolved records remain available for inspection.
 
+AX tries to add a `.gitignore` containing `*` at the state root, including existing directories. It preserves existing ignore files and skips roots containing `.git`. Creation or write failures do not block commands. Git still tracks files already in its index.
+
 ## Integration limits
 
 - Claude uses an experimental native Channel and asks for development Channel confirmation at launch. Organization policies may disable Channels.
