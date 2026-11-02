@@ -204,7 +204,7 @@ func (b *bridge) connectLoop() {
 		var connected struct {
 			Capabilities *deliveryCapabilities `json:"delivery_capabilities"`
 		}
-		e = c.call("ax.connect", object{"version": "1", "agent_id": s.ID, "secret": s.Secret, "launch_id": s.LaunchID, "lifecycle_events": true, "corrections": true, "delivery_capabilities": caps, "peer_events": s.DeliveryMode == "mcp", "adapter_version": Version}, &connected)
+		e = c.call("ax.connect", object{"version": "1", "agent_id": s.ID, "secret": s.Secret, "launch_id": s.LaunchID, "lifecycle_events": true, "corrections": true, "interrupted_notices": true, "delivery_capabilities": caps, "peer_events": s.DeliveryMode == "mcp", "adapter_version": Version}, &connected)
 		if e != nil {
 			c.close()
 			fmt.Fprintln(os.Stderr, "AX:", e)

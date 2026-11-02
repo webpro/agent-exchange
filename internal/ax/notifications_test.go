@@ -154,6 +154,55 @@ func readyBefore(b *broker, id string) {
 	b.peers[id].stateSince = time.Now().Add(-time.Minute)
 }
 
+func TestInterruptedNoticesAfterQueuedDeadline(t *testing.T) {
+	for _, host := range []string{"codex"} {
+		for _, state := range []string{"queued", "handoff_started", "delivery_uncertain", "wake_accepted", "channel_written", "content_served"} {
+			t.Run(host+"/"+state, func(t *testing.T) {
+				b, _ := localBroker(t)
+				sender, from, _ := noticeSender(t, b, true)
+				recipient, to, _ := endpoint(t, b, "api", testMesh)
+				recipient.Host = host
+				p := b.peers[recipient.ID]
+				p.Host = host
+				p.enrolled = time.UnixMilli(500)
+				p.capabilities, _ = sessionCapabilities(recipient)
+				m := request(t, b, from, "ax.send", object{"target": "api", "text": "task", "client_message_id": "task", "ttl_seconds": 1}).(Message)
+				if state != "queued" {
+					if err := b.event(m.ID, "handoff_started", to.epoch); err != nil {
+						t.Fatal(err)
+					}
+					if state != "handoff_started" {
+						if err := b.event(m.ID, state, to.epoch); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				if _, err := b.db.Exec("UPDATE messages SET created=500,expires=1500 WHERE id=?", m.ID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := b.db.Exec("UPDATE events SET at=1000 WHERE message=?", m.ID); err != nil {
+					t.Fatal(err)
+				}
+				observedLifecycle(t, b, recipient, "ready", "idle", object{"id": "turn", "status": "interrupted", "at_ms": 3000})
+				notices, err := b.notices(sender.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if state == "queued" {
+					if len(notices) != 0 {
+						t.Fatalf("expired queued mail was reported interrupted: %+v", notices)
+					}
+					return
+				}
+				if len(notices) != 1 || notices[0].MessageID != m.ID || notices[0].State != "interrupted" || notices[0].Delivery != state {
+					t.Fatalf("queued deadline hid accepted work: %+v", notices)
+				}
+				assertMessageState(t, b, m.ID, state)
+			})
+		}
+	}
+}
+
 func TestStalledOfferNotifiesSenderOncePerOffer(t *testing.T) {
 	for _, receipt := range []string{"wake_accepted", "channel_written"} {
 		t.Run(receipt, func(t *testing.T) {

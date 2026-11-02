@@ -388,16 +388,17 @@ func Hook(dir, file string, in io.Reader, launch ...string) error {
 		expected = launch[0]
 	}
 	var input struct {
-		Session      string        `json:"session_id"`
-		Event        string        `json:"hook_event_name"`
-		Permission   string        `json:"permission_mode"`
-		Tool         string        `json:"tool_name"`
-		File         string        `json:"session_file"`
-		Source       string        `json:"source"`
-		Transcript   string        `json:"transcript_path"`
-		CodexStatus  string        `json:"codex_status"`
-		ClaudeTurn   *nativeTurn   `json:"claude_turn"`
-		ContextUsage *ContextUsage `json:"context_usage"`
+		Session          string        `json:"session_id"`
+		Event            string        `json:"hook_event_name"`
+		Permission       string        `json:"permission_mode"`
+		Tool             string        `json:"tool_name"`
+		File             string        `json:"session_file"`
+		Source           string        `json:"source"`
+		Transcript       string        `json:"transcript_path"`
+		CodexStatus      string        `json:"codex_status"`
+		CodexInterrupted *nativeTurn   `json:"codex_interrupted"`
+		ClaudeTurn       *nativeTurn   `json:"claude_turn"`
+		ContextUsage     *ContextUsage `json:"context_usage"`
 	}
 	if err := json.NewDecoder(io.LimitReader(in, maxFrame)).Decode(&input); err != nil {
 		return err
@@ -508,7 +509,7 @@ func Hook(dir, file string, in io.Reader, launch ...string) error {
 		return e
 	}
 	defer c.close()
-	return c.call("ax.lifecycle", object{"agent_id": s.ID, "secret": s.Secret, "native_session_id": input.Session, "launch_id": s.LaunchID, "permission_mode": input.Permission, "state": state, "state_cause": cause, "codex_status": input.CodexStatus, "claude_turn": input.ClaudeTurn, "context_usage": input.ContextUsage, "context_compacted_at_ms": compactedAt}, nil)
+	return c.call("ax.lifecycle", object{"agent_id": s.ID, "secret": s.Secret, "native_session_id": input.Session, "launch_id": s.LaunchID, "permission_mode": input.Permission, "state": state, "state_cause": cause, "codex_status": input.CodexStatus, "codex_interrupted": input.CodexInterrupted, "claude_turn": input.ClaudeTurn, "context_usage": input.ContextUsage, "context_compacted_at_ms": compactedAt}, nil)
 }
 
 func bindingConflict(s Session, actual string) error {

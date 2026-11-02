@@ -76,23 +76,25 @@ type peer struct {
 	corrections               bool // The connected bridge renders supersedes and superseded_by.
 	handoffID, handoffMessage string
 	Agent
-	hash            string
-	epoch           int64
-	seen            time.Time
-	conn            *serverConn
-	ready           bool
-	enrolled        time.Time
-	notice          string
-	noticeRetry     time.Time
-	capabilities    *deliveryCapabilities
-	savedState      string
-	stateSince      time.Time
-	cause           stateCause
-	codexObserved   bool
-	usage           *ContextUsage
-	claudeTurn      *nativeTurn
-	claudeTurns     map[string]claudeTurnWindow
-	claudeStartedAt int64
+	hash               string
+	epoch              int64
+	seen               time.Time
+	conn               *serverConn
+	ready              bool
+	enrolled           time.Time
+	notice             string
+	noticeRetry        time.Time
+	capabilities       *deliveryCapabilities
+	savedState         string
+	stateSince         time.Time
+	cause              stateCause
+	codexObserved      bool
+	usage              *ContextUsage
+	interruptedNoticed string
+	claudeTurn         *nativeTurn
+	claudeTurns        map[string]claudeTurnWindow
+	claudeStartedAt    int64
+	interruptedNotices bool
 }
 type serverConn struct {
 	networkWake chan struct{}
@@ -436,6 +438,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		State              string                `json:"state"`
 		Cause              *stateCause           `json:"state_cause"`
 		CodexStatus        string                `json:"codex_status"`
+		CodexInterrupted   *nativeTurn           `json:"codex_interrupted"`
 		ClaudeTurn         *nativeTurn           `json:"claude_turn"`
 		ContextUsage       *ContextUsage         `json:"context_usage"`
 		ContextCompactedAt int64                 `json:"context_compacted_at_ms"`
@@ -453,6 +456,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		Mesh               string                `json:"mesh"`
 		LifecycleEvents    bool                  `json:"lifecycle_events"`
 		Corrections        bool                  `json:"corrections"`
+		InterruptedNotices bool                  `json:"interrupted_notices"`
 		Capabilities       *deliveryCapabilities `json:"delivery_capabilities"`
 	}
 	if e := json.Unmarshal(params, &a); e != nil {
@@ -519,6 +523,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 			p.State = "starting"
 			p.cause = stateCause{}
 			p.codexObserved = false
+			p.interruptedNoticed = ""
 			p.claudeTurn, p.claudeTurns, p.claudeStartedAt = nil, nil, 0
 			p.usage = nil
 			p.BindingError = ""
@@ -610,6 +615,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		c.peerEvents = a.PeerEvents
 		p.relayGuidance = supportsRelay
 		p.corrections = a.Corrections
+		p.interruptedNotices = a.InterruptedNotices
 		p.capabilities = a.Capabilities
 		p.handoffID, p.handoffMessage = "", ""
 		return object{"agent_id": p.ID, "lease_epoch": p.epoch, "delivery_capabilities": p.capabilities}, nil
@@ -643,6 +649,12 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		}
 		if p.Host == "codex" && codexLifecycleState(a.CodexStatus) != "" {
 			p.codexObserved = true
+			if validNativeTurn(a.CodexInterrupted) && a.CodexInterrupted.Status == "interrupted" && a.CodexInterrupted.ID != p.interruptedNoticed {
+				if err := b.noticeInterrupted(p, *a.CodexInterrupted); err != nil {
+					return nil, err
+				}
+				p.interruptedNoticed = a.CodexInterrupted.ID
+			}
 		} else if p.Host == "claude" && validNativeTurn(a.ClaudeTurn) {
 			a.State = p.observeClaudeTurn(a.ClaudeTurn)
 		}

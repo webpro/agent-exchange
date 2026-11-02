@@ -75,10 +75,11 @@ func codexSessionSocket(ctx context.Context, dir, file, remote string, bypass bo
 		delivered bool
 	}
 	type observation struct {
-		connection uint64
-		data       []byte
-		native     string
-		permission *startupPermission
+		connection  uint64
+		data        []byte
+		native      string
+		interrupted *nativeTurn
+		permission  *startupPermission
 	}
 	events := make(chan struct{}, 1)
 	var observed sync.Mutex
@@ -161,7 +162,8 @@ func codexSessionSocket(ctx context.Context, dir, file, remote string, bypass bo
 				}
 			}
 			var event struct {
-				Native string `json:"session_id"`
+				Native      string      `json:"session_id"`
+				Interrupted *nativeTurn `json:"codex_interrupted"`
 			}
 			json.Unmarshal(latest.data, &event)
 			if event.Native == previous.native {
@@ -170,7 +172,14 @@ func codexSessionSocket(ctx context.Context, dir, file, remote string, bypass bo
 			if permission != "" && connection == latest.connection {
 				latest.permission = &startupPermission{mode: permission}
 			}
-			latest.native = event.Native
+			if event.Native == previous.native && previous.interrupted != nil && (event.Interrupted == nil || event.Interrupted.At < previous.interrupted.At) {
+				var fields object
+				json.Unmarshal(latest.data, &fields)
+				event.Interrupted = previous.interrupted
+				fields["codex_interrupted"] = event.Interrupted
+				latest.data = raw(fields)
+			}
+			latest.native, latest.interrupted = event.Native, event.Interrupted
 			observed.Unlock()
 			select {
 			case events <- struct{}{}:
@@ -237,11 +246,13 @@ func codexSessionSocket(ctx context.Context, dir, file, remote string, bypass bo
 // Only the TUI's own conversation selection can bind the observation. Native
 // events for other threads, including session naming and subagents, are ignored.
 type codexSessionObserver struct {
-	mu      sync.Mutex
-	pending map[string]bool
-	native  string
-	status  string
-	usage   *ContextUsage
+	mu          sync.Mutex
+	pending     map[string]bool
+	native      string
+	status      string
+	turn        *nativeTurn
+	interrupted *nativeTurn
+	usage       *ContextUsage
 }
 
 func (o *codexSessionObserver) request(data []byte) {
@@ -267,12 +278,13 @@ func (o *codexSessionObserver) response(data []byte) []byte {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if p.Method != "" {
-		if p.Method != "thread/status/changed" && p.Method != "thread/tokenUsage/updated" && p.Method != "item/started" {
+		if p.Method != "thread/status/changed" && p.Method != "turn/started" && p.Method != "turn/completed" && p.Method != "thread/tokenUsage/updated" && p.Method != "item/started" {
 			return nil
 		}
 		var params struct {
 			Thread string                `json:"threadId"`
 			Status struct{ Type string } `json:"status"`
+			Turn   nativeTurn            `json:"turn"`
 			Usage  *struct {
 				Last struct {
 					Total *int64 `json:"totalTokens"`
@@ -302,11 +314,34 @@ func (o *codexSessionObserver) response(data []byte) []byte {
 				u.WindowTokens = o.usage.WindowTokens
 			}
 			o.usage = u
-		} else {
+		} else if p.Method == "thread/status/changed" {
 			if params.Status.Type == o.status || codexLifecycleState(params.Status.Type) == "" {
 				return nil
 			}
 			o.status = params.Status.Type
+			if o.status == "active" && o.turn != nil && o.turn.Status != "inProgress" {
+				o.turn = nil
+			}
+		} else {
+			params.Turn.At = time.Now().UnixMilli()
+			if !validNativeTurn(&params.Turn) || (o.turn != nil && o.turn.ID == params.Turn.ID && o.turn.Status == params.Turn.Status) {
+				return nil
+			}
+			if (p.Method == "turn/started") != (params.Turn.Status == "inProgress") {
+				return nil
+			}
+			if p.Method == "turn/completed" && o.turn != nil && o.turn.ID != params.Turn.ID {
+				return nil
+			}
+			o.turn = &params.Turn
+			if p.Method == "turn/started" {
+				o.status = "active"
+			} else {
+				o.status = "idle"
+				if params.Turn.Status == "interrupted" {
+					o.interrupted = o.turn
+				}
+			}
 		}
 		return o.event()
 	}
@@ -327,7 +362,11 @@ func (o *codexSessionObserver) response(data []byte) []byte {
 	}
 	var status struct{ Type string }
 	_ = json.Unmarshal(result.Thread.Status, &status)
+	if o.native != result.Thread.ID {
+		o.interrupted = nil
+	}
 	o.native, o.status = result.Thread.ID, status.Type
+	o.turn = nil
 	o.usage = &ContextUsage{ObservedAt: time.Now().UnixMilli()}
 	permission := "unknown"
 	switch result.Sandbox.Type {
@@ -347,7 +386,7 @@ func (o *codexSessionObserver) event() []byte {
 	if codexLifecycleState(o.status) == "" {
 		event = "ContextUsage"
 	}
-	return raw(object{"hook_event_name": event, "session_id": o.native, "codex_status": o.status, "context_usage": o.usage})
+	return raw(object{"hook_event_name": event, "session_id": o.native, "codex_status": o.status, "codex_interrupted": o.interrupted, "context_usage": o.usage})
 }
 
 func (o *codexSessionObserver) unavailable() []byte {

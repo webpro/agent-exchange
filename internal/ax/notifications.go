@@ -42,11 +42,15 @@ type deliveryNotice struct {
 	Delivery     string `json:"delivery_state,omitempty"`
 	Attempt      int    `json:"offer_attempt,omitempty"`
 	Minutes      int64  `json:"stalled_minutes,omitempty"`
+	TurnID       string `json:"turn_id,omitempty"`
 	IdleObserved bool   `json:"idle_observed,omitempty"`
 	Guidance     string `json:"guidance,omitempty"`
 }
 
 func renderNotice(n deliveryNotice) deliveryNotice {
+	if n.State == "interrupted" {
+		n.Guidance = fmt.Sprintf("A Codex turn for %s was interrupted. Message %s remains unresolved at delivery state %s; task completion is unknown. Tell the user which peer and message are affected and ask how to proceed. Do not resend or restart work automatically.", n.Recipient, n.MessageID, n.Delivery)
+	}
 	if n.State == "stalled" && n.Guidance == "" {
 		cause := "The recipient reports ready, but this harness does not report busy turns, so it may still be working or its harness may have lost the wake."
 		if n.IdleObserved {
@@ -55,6 +59,51 @@ func renderNotice(n deliveryNotice) deliveryNotice {
 		n.Guidance = fmt.Sprintf("Message %s to %s reached %s %d minutes ago and has not been fetched or acknowledged. %s Check the recipient's terminal or worktree. If it is not working on the message, ask the user to have it call list_pending once. AX does not offer the message again, and resending could run the task twice.", n.MessageID, n.Recipient, n.Delivery, n.Minutes, cause)
 	}
 	return n
+}
+
+func (b *broker) noticeInterrupted(p *peer, turn nativeTurn) error {
+	// The launcher replays an interruption after a broker restart. An offer made
+	// after the turn stopped is not part of it.
+	rows, err := b.db.Query(`SELECT m.id,m.sender,m.state,substr(json_extract(m.data,'$.text'),1,100),
+ (SELECT count(*) FROM events WHERE message=m.id AND state='handoff_started')
+ FROM messages m JOIN agents a ON a.id=m.sender
+ WHERE m.recipient=? AND m.created<=? AND (m.state!='queued' OR m.expires>?)
+ AND coalesce((SELECT max(at) FROM events WHERE message=m.id AND state='handoff_started'),0)<=?
+ AND m.state NOT IN ('acknowledged','expired','refused','abandoned')
+ AND coalesce(json_extract(a.data,'$.kind'),'')!='relay' AND json_extract(a.data,'$.remote') IS NULL
+ AND json_extract(m.data,'$.network_origin') IS NULL`, p.ID, turn.At, turn.At, turn.At)
+	if err != nil {
+		return err
+	}
+	var notices []deliveryNotice
+	var senders []string
+	for rows.Next() {
+		n := deliveryNotice{State: "interrupted", Recipient: p.Name, TurnID: turn.ID, At: turn.At}
+		var sender string
+		if err = rows.Scan(&n.MessageID, &sender, &n.Delivery, &n.Preview, &n.Attempt); err != nil {
+			break
+		}
+		n.ID = "ntf_" + digest(fmt.Sprintf("%s:interrupted:%d", n.MessageID, n.Attempt))[:32]
+		notices, senders = append(notices, n), append(senders, sender)
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	rows.Close()
+	if err != nil || len(notices) == 0 {
+		return err
+	}
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for i, n := range notices {
+		if err = insertNotice(tx, senders[i], n); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func insertNotice(q interface {
@@ -166,7 +215,8 @@ func (b *broker) noticeStalled(now time.Time) {
 }
 
 func (b *broker) notices(recipient string) ([]deliveryNotice, error) {
-	rows, err := b.db.Query("SELECT data FROM notifications WHERE recipient=? AND acknowledged=0 ORDER BY rowid LIMIT 100", recipient)
+	supported := b.peers[recipient] != nil && b.peers[recipient].interruptedNotices
+	rows, err := b.db.Query("SELECT data FROM notifications WHERE recipient=? AND acknowledged=0 AND (? OR json_extract(data,'$.status')!='interrupted') ORDER BY rowid LIMIT 100", recipient, supported)
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +259,7 @@ func (b *broker) dispatchNotice(p *peer, now time.Time) {
 		return
 	}
 	var data string
-	if b.db.QueryRow("SELECT data FROM notifications WHERE recipient=? AND acknowledged=0 ORDER BY rowid LIMIT 1", p.ID).Scan(&data) != nil {
+	if b.db.QueryRow("SELECT data FROM notifications WHERE recipient=? AND acknowledged=0 AND (? OR json_extract(data,'$.status')!='interrupted') ORDER BY rowid LIMIT 1", p.ID, p.interruptedNotices).Scan(&data) != nil {
 		return
 	}
 	var n deliveryNotice

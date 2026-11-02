@@ -184,27 +184,7 @@ func TestCodexBusyKeepsNativeQueueFIFO(t *testing.T) {
 	f := newCodexLifecycleFixture(t)
 	f.connect("active")
 	f.waitState("busy")
-	sender := Session{ID: randomID("agt_"), Secret: randomID(""), Name: "web", Host: "codex", Mesh: testMesh, Native: "22222222-2222-4222-8222-222222222222"}
-	if err := f.admin.call("ax.enroll", sender, nil); err != nil {
-		t.Fatal(err)
-	}
-	from, err := dial(f.admin.conn.RemoteAddr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer from.close()
-	for _, call := range []struct {
-		method string
-		args   object
-	}{
-		{"ax.connect", object{"version": "1", "agent_id": sender.ID, "secret": sender.Secret}},
-		{"ax.presence", object{"native_session_id": sender.Native, "permission_mode": "read-only", "state": "ready"}},
-		{"ax.ready", object{}},
-	} {
-		if err := from.call(call.method, call.args, nil); err != nil {
-			t.Fatal(err)
-		}
-	}
+	from := f.sender()
 	for _, text := range []string{"first", "second"} {
 		if err := from.call("ax.send", object{"target": "api", "text": text, "client_message_id": text}, nil); err != nil {
 			t.Fatal(err)
@@ -224,6 +204,33 @@ func TestCodexBusyKeepsNativeQueueFIFO(t *testing.T) {
 		}
 	}
 	f.waitState("busy")
+}
+
+func (f *codexLifecycleFixture) sender() *client {
+	t := f.t
+	t.Helper()
+	sender := Session{ID: randomID("agt_"), Secret: randomID(""), Name: "web", Host: "codex", Mesh: testMesh, Native: "22222222-2222-4222-8222-222222222222"}
+	if err := f.admin.call("ax.enroll", sender, nil); err != nil {
+		t.Fatal(err)
+	}
+	from, err := dial(f.admin.conn.RemoteAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(from.close)
+	for _, call := range []struct {
+		method string
+		args   object
+	}{
+		{"ax.connect", object{"version": "1", "agent_id": sender.ID, "secret": sender.Secret, "interrupted_notices": true}},
+		{"ax.presence", object{"native_session_id": sender.Native, "permission_mode": "read-only", "state": "ready"}},
+		{"ax.ready", object{}},
+	} {
+		if err := from.call(call.method, call.args, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return from
 }
 
 func TestCodexObserverFiltersBeforeBinding(t *testing.T) {

@@ -54,3 +54,9 @@ An observed Codex peer must remain ready for the whole five-minute window. A tur
 Messages with a live replacement from the same sender to the same recipient produce no new stalled notice. Expired, refused, abandoned or overdue queued replacements do not suppress it. Each message is checked separately, so an expired middle message can leave both earlier and later messages eligible.
 
 The notice stores the message, recipient, delivery state, minutes since its last event and the offer attempt; guidance is rendered when read. AX does not offer the message again. Check the recipient, and if it is not working on the message, have it call `list_pending` once. A stalled notice stays as long as its message stays unresolved and is deleted with the message after retention.
+
+## Interrupted Codex turns
+
+When AX observes an interrupted Codex turn, it stores an `interrupted` notice for each unresolved local message that existed at the interruption, including fetched mail. Each message gets at most one interruption notice per offer attempt, even across later unrelated interruptions. Ordinary turn completion produces no interruption notice. The notice records the native turn ID and delivery state; guidance is rendered when read.
+
+Sender bridges must declare `interrupted_notices` support at connection to receive these notices. Relay senders are excluded. Report the affected peer and message to the user and ask how to proceed. AX never acknowledges, resends or restarts the task in response to an interruption.

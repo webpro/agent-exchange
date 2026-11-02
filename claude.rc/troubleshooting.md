@@ -57,6 +57,8 @@ A long `since` on `busy` with a recent `seen` proves a live bridge, not a runnin
 
 AX 0.6.1 notifies the sender when queued mail expires or is refused. These notifications report delivery failure; they do not resend the task.
 
+An `interrupted` notice identifies a Codex turn that stopped while your message remained unresolved. Report it to the user before taking recovery action. Unfetched wakes can remain queued in Codex after an interrupt; AX never starts that queue automatically. See [delivery notifications](delivery-notifications.md#interrupted-codex-turns).
+
 ## Claude tools work, but incoming messages do not wake the agent
 
 `channel_written` means AX wrote to the MCP channel. It does not prove Claude

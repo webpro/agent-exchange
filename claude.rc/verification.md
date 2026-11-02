@@ -13,6 +13,8 @@ Preview verification, September 19, 2026. Live host tests run on macOS arm64 in 
 
 November 3, 2026. Codex CLI 0.166.0 in a real TUI with an isolated mock provider reported busy during a turn and ready after it failed. With the broker suspended, the launcher exited 1.1 seconds after `/quit` was submitted. Idle observation left the session file unchanged over 11 seconds, and broker timeouts produced no lifecycle errors in the TUI.
 
+The interruption-notice check queued three distinct messages, then interrupted four turns. The sender received three notices, one per message and offer attempt. All three wakes remained queued 20 seconds later. A unit check also verified that a new offer attempt can produce a new notice after the earlier notice was acknowledged.
+
 ## Live evidence
 
 Grok and OpenCode automatically connected, discovered each other, and completed a round trip containing `AX_GROK_OPENCODE_OK`. Both records reached `acknowledged`. The same named conversations were closed and resumed with unchanged native IDs; queued mail then reached the resumed recipient without replaying accepted messages.
