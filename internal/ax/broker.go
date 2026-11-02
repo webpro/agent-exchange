@@ -430,6 +430,9 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		Capabilities    *deliveryCapabilities `json:"delivery_capabilities"`
 	}
 	if e := json.Unmarshal(params, &a); e != nil {
+		if keyedWrite(method) {
+			return nil, refuse("invalid_parameters", "invalid parameters", nil)
+		}
 		return nil, errors.New("invalid parameters")
 	}
 	if strings.HasPrefix(method, "ax.network.") {
@@ -758,7 +761,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 	case "ax.send", "ax.reply", "ax.resend", "ax.follow_up":
 		ttl, err := integerArgument(a.TTL, "ttl_seconds", defaultTTL, 1, maxTTL)
 		if err != nil {
-			return nil, err
+			return nil, refuse("invalid_ttl", err.Error(), nil)
 		}
 		return b.send(p, a.Target, a.MessageID, a.Text, a.ClientID, int(ttl), method, a.Provenance, a.Data)
 	case "ax.get_message", "ax.ack", "ax.receipt", "ax.status":
@@ -880,7 +883,7 @@ func (b *broker) resolve(target string) (*peer, error) {
 		return b.savedTarget(target)
 	}
 	if len(matches) != 1 {
-		return nil, errors.New("ambiguous agent name; list agents and use agent_id")
+		return nil, &targetError{"ambiguous_target", "ambiguous agent name; list agents and use agent_id"}
 	}
 	return matches[0], nil
 }
@@ -889,7 +892,7 @@ func (b *broker) message(id string) (Message, error) {
 	var data, state string
 	e := b.db.QueryRow("SELECT data,state FROM messages WHERE id=?", id).Scan(&data, &state)
 	if e != nil {
-		return m, errors.New("message not found")
+		return m, errMessageNotFound
 	}
 	if e = json.Unmarshal([]byte(data), &m); e != nil {
 		return m, e
@@ -959,18 +962,21 @@ func (b *broker) sendImported(p *peer, target, parent, text, key string, ttl int
 		data = structured[1]
 	}
 	reply, resend, followup := method == "ax.reply", method == "ax.resend", method == "ax.follow_up"
-	if !validID.MatchString(key) || (!resend && (!utf8.ValidString(text) || len(text) == 0 || len(text) > maxText)) {
-		return nil, errors.New("provide client_message_id and 1 to 65536 bytes of UTF-8 text")
+	if !validID.MatchString(key) {
+		return nil, refuse("invalid_client_message_id", "provide client_message_id and 1 to 65536 bytes of UTF-8 text", nil)
+	}
+	if !resend && (!utf8.ValidString(text) || len(text) == 0 || len(text) > maxText) {
+		return nil, refuse("invalid_text", "provide client_message_id and 1 to 65536 bytes of UTF-8 text", nil)
 	}
 	if ttl == 0 {
 		ttl = defaultTTL
 	}
 	if ttl < 1 || ttl > maxTTL {
-		return nil, fmt.Errorf("TTL must be between 1 and %d seconds", maxTTL)
+		return nil, refuse("invalid_ttl", fmt.Sprintf("TTL must be between 1 and %d seconds", maxTTL), nil)
 	}
 	if !resend {
 		if err := validateRelayContent(p, provenance, data); err != nil {
-			return nil, err
+			return nil, refuse("invalid_content", err.Error(), nil)
 		}
 	}
 	hashInputs := []any{target, parent, text, ttl, reply}
@@ -994,7 +1000,7 @@ func (b *broker) sendImported(p *peer, target, parent, text, key string, ttl int
 	e := b.db.QueryRow("SELECT id,request_hash FROM messages WHERE sender=? AND client_id=?", p.ID, key).Scan(&existing, &prior)
 	if e == nil {
 		if hash != prior {
-			return nil, errors.New("client_message_id already used with different content")
+			return nil, refuse("key_conflict", "client_message_id already used with different content", nil)
 		}
 		m, err := b.message(existing)
 		if err != nil {
@@ -1006,7 +1012,7 @@ func (b *broker) sendImported(p *peer, target, parent, text, key string, ttl int
 		return nil, e
 	}
 	if p.Host == "external" && p.Remote == nil && (p.Permission == "" || p.Permission == "unknown" || !safe(p)) {
-		return nil, errors.New("attached sender has no approved permission mode; configure its native permission mode with -p, or use ax attach --relay for an automated bridge. No message was queued")
+		return nil, refuse("sender_unapproved", "attached sender has no approved permission mode; configure its native permission mode with -p, or use ax attach --relay for an automated bridge. No message was queued", nil)
 	}
 	if incoming != nil && incoming.Expires <= time.Now().UnixMilli() {
 		return nil, errors.New("remote message has expired")
@@ -1018,13 +1024,13 @@ func (b *broker) sendImported(p *peer, target, parent, text, key string, ttl int
 	if resend {
 		m, err := b.message(parent)
 		if err != nil {
-			return nil, err
+			return nil, unknownMessage(err)
 		}
 		if m.Sender.ID != p.ID {
-			return nil, errors.New("only the original sender can resend a message")
+			return nil, refuse("not_sender", "only the original sender can resend a message", nil)
 		}
 		if m.State != "expired" {
-			return nil, errors.New("only expired messages can be resent; never replay accepted or uncertain work")
+			return nil, refuse("not_expired", "only expired messages can be resent; never replay accepted or uncertain work", nil)
 		}
 		to, e = b.messagePeer(b.db, m.Recipient)
 		if e != nil {
@@ -1033,7 +1039,7 @@ func (b *broker) sendImported(p *peer, target, parent, text, key string, ttl int
 		text, parent, depth, resendOf = m.Text, m.Parent, m.Depth, m.ID
 		provenance, data = m.Provenance, m.Data
 		if err := validateRelayContent(p, provenance, data); err != nil {
-			return nil, err
+			return nil, refuse("invalid_content", err.Error(), nil)
 		}
 		thread, e = b.threadRoot(m)
 		if e != nil {
@@ -1042,10 +1048,13 @@ func (b *broker) sendImported(p *peer, target, parent, text, key string, ttl int
 	} else if reply || followup {
 		m, e := b.message(parent)
 		if e != nil {
-			return nil, e
+			return nil, unknownMessage(e)
 		}
-		if (reply && m.Recipient != p.ID) || (followup && m.Sender.ID != p.ID) {
-			return nil, errors.New("only the recipient may reply; only the sender may follow up")
+		if reply && m.Recipient != p.ID {
+			return nil, refuse("not_recipient", "only the recipient may reply; only the sender may follow up", nil)
+		}
+		if followup && m.Sender.ID != p.ID {
+			return nil, refuse("not_sender", "only the recipient may reply; only the sender may follow up", nil)
 		}
 		networkReply := reply && incoming != nil && incoming.ParentRemoteID != "" && p.Remote != nil
 		if networkReply {
@@ -1055,8 +1064,11 @@ func (b *broker) sendImported(p *peer, target, parent, text, key string, ttl int
 			m.RemoteMessageID = incoming.ParentRemoteID
 			networkParent = &m
 		}
-		if (reply && m.State == "queued" && !networkReply) || m.State == "expired" || m.State == "refused" || m.State == "abandoned" {
-			return nil, errors.New("message is not eligible for a reply or follow-up")
+		if reply && m.State == "queued" && !networkReply {
+			return nil, refuse("not_offered", "message is not eligible for a reply or follow-up", nil)
+		}
+		if m.State == "expired" || m.State == "refused" || m.State == "abandoned" {
+			return nil, refuse("already_terminal", "message is not eligible for a reply or follow-up", nil)
 		}
 		targetID := m.Sender.ID
 		if followup {
@@ -1084,19 +1096,23 @@ func (b *broker) sendImported(p *peer, target, parent, text, key string, ttl int
 		}
 	} else {
 		to, e = b.resolve(target)
+		var unresolved *targetError
+		if errors.As(e, &unresolved) {
+			return nil, refuse(unresolved.reason, unresolved.text, nil)
+		}
 		if e != nil {
 			return nil, e
 		}
 		parent = ""
 	}
 	if to == nil || to.ID == p.ID {
-		return nil, errors.New("invalid recipient")
+		return nil, refuse("invalid_target", "invalid recipient", nil)
 	}
 	if to.Remote != nil && (p.Remote != nil || !b.networkRouteAllowed(to.Remote)) {
-		return nil, errors.New("remote route is not authorized; transitive forwarding is not supported")
+		return nil, refuse("remote_route", "remote route is not authorized; transitive forwarding is not supported", nil)
 	}
 	if to.Policy == "refuse" {
-		return nil, errors.New("recipient refuses messages")
+		return nil, refuse("recipient_refuses", "recipient refuses messages", nil)
 	}
 	if len(provenance) > 0 {
 		if ok, reason := admitsExternal(to, provenance); !ok {
@@ -1108,13 +1124,16 @@ func (b *broker) sendImported(p *peer, target, parent, text, key string, ttl int
 		return nil, e
 	}
 	if count >= 1024 || size >= 32<<20 {
-		return nil, errors.New("mailbox capacity reached")
+		return nil, refuse("mailbox_full", "mailbox capacity reached", nil)
 	}
-	if e = b.db.QueryRow("SELECT count(*) FROM messages WHERE sender=? AND created>?", p.ID, time.Now().Add(-time.Minute).UnixMilli()).Scan(&count); e != nil {
+	var oldest int64
+	if e = b.db.QueryRow("SELECT count(*),coalesce(min(created),0) FROM messages WHERE sender=? AND created>?", p.ID, time.Now().Add(-time.Minute).UnixMilli()).Scan(&count, &oldest); e != nil {
 		return nil, e
 	}
 	if count >= 30 {
-		return nil, errors.New("send rate limit reached")
+		// The window frees up when its oldest send leaves it.
+		wait := max(1, oldest+time.Minute.Milliseconds()-time.Now().UnixMilli())
+		return nil, refuse("rate_limit", "send rate limit reached", object{"retry_after_ms": wait})
 	}
 	// Compare the complete content, serialized as it is stored. Missing structured
 	// fields compare as null, preserving the repeat guard for ordinary peer mail.
@@ -1126,7 +1145,7 @@ func (b *broker) sendImported(p *peer, target, parent, text, key string, ttl int
 		return nil, e
 	}
 	if count > 0 {
-		return nil, errors.New("repeated message suppressed; retry with the original client_message_id")
+		return nil, refuse("repeated_text", "repeated message suppressed; retry with the original client_message_id", nil)
 	}
 	tx, e := b.db.Begin()
 	if e != nil {

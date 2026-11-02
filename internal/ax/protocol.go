@@ -37,6 +37,9 @@ type rpcError struct {
 
 const replyDepthLimitCode = -32001
 
+// A keyed write the broker refused before storing or changing any message; see refuse.
+const requestRefusedCode = -32003
+
 func (e *rpcError) Error() string { return e.Message }
 func raw(v any) json.RawMessage   { b, _ := json.Marshal(v); return b }
 func readFrame(r io.Reader) (packet, error) {

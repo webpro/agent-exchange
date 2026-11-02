@@ -3,7 +3,6 @@ package ax
 import (
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -53,10 +52,10 @@ func (b *broker) savedTarget(target string) (*peer, error) {
 		return nil, err
 	}
 	if len(ids) == 0 {
-		return nil, fmt.Errorf("agent %q not found in this AX runtime; launch it with ax, or check whether it is running under a different AX_HOME", target)
+		return nil, &targetError{"unknown_target", fmt.Sprintf("agent %q not found in this AX runtime; launch it with ax, or check whether it is running under a different AX_HOME", target)}
 	}
 	if len(ids) != 1 {
-		return nil, errors.New("ambiguous agent name; list agents and use agent_id")
+		return nil, &targetError{"ambiguous_target", "ambiguous agent name; list agents and use agent_id"}
 	}
 	return storedPeer(b.db, ids[0])
 }

@@ -10,6 +10,9 @@ import (
 type requestFailure struct {
 	cause     error
 	submitted bool
+	// An earlier attempt was submitted and lost its response, so the outcome stays
+	// unknown whatever a later attempt reports.
+	lost bool
 }
 
 func (e *requestFailure) Error() string { return e.cause.Error() }
@@ -21,9 +24,10 @@ func (b *bridge) toolCall(ctx context.Context, meta json.RawMessage, method stri
 	if err := b.startupCalled(); err != nil {
 		return &requestFailure{cause: err}
 	}
-	submitted := false
+	submitted, lost := false, false
 	var err error
 	for attempt := 0; attempt < 2; attempt++ {
+		lost = submitted
 		if err = resourcePause(b.dir, time.Now()); err != nil {
 			break
 		}
@@ -66,7 +70,7 @@ func (b *bridge) toolCall(ctx context.Context, meta json.RawMessage, method stri
 		}
 		b.invalidate(c)
 	}
-	return &requestFailure{cause: err, submitted: submitted}
+	return &requestFailure{cause: err, submitted: submitted, lost: lost}
 }
 
 func toolFailure(err error, args object) object {
@@ -93,6 +97,22 @@ func toolFailure(err error, args object) object {
 		failure["recovery"] = "If retrying this operation after recovery, reuse this client_message_id with unchanged arguments. Do not generate a new key."
 	}
 	var rpc *rpcError
+	var request *requestFailure
+	if _, keyed := args["client_message_id"]; keyed && errors.As(err, &rpc) && rpc.Code == requestRefusedCode && !(errors.As(err, &request) && request.lost) {
+		// The broker refused this send before storing anything, and no earlier
+		// attempt of the call lost its response, so nothing was sent.
+		step, _ := rpc.Data["recovery"].(string)
+		if step == "" {
+			step = "Change the request as the error message says, then send again."
+		}
+		failure["code"] = "request_refused"
+		failure["submission"] = "not_submitted"
+		failure["recovery"] = "Nothing was sent. " + step
+		if wait, ok := rpc.Data["retry_after_ms"]; ok {
+			failure["retryable"] = true
+			failure["retry_after_ms"] = wait
+		}
+	}
 	if errors.As(err, &rpc) && rpc.Code == replyDepthLimitCode {
 		// This rejection occurs before any write, unlike a generic broker error
 		// which may report a failed commit with an uncertain outcome.

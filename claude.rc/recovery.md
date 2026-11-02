@@ -16,15 +16,18 @@ with the same key and unchanged arguments returns the original durable message.
 Failures include structured fields in addition to their JSON text representation:
 
 - `retryable`: whether recovering the transport or waiting for resource cooldown
-  can make a later attempt useful.
+  or the send rate limit can make a later attempt useful.
 - `submission`: `not_submitted`, `outcome_unknown`, or `not_applicable` for reads.
 - `client_message_id`: the key to preserve when retrying a send or reply.
 - `connection_state`: `reconnecting` for transport failures.
-- `retry_after_ms`: the remaining resource cooldown, when applicable.
+- `retry_after_ms`: the remaining resource cooldown or rate-limit window, when applicable.
+- `recovery`: the next step, such as the change to make or the key to reuse.
 
 `outcome_unknown` means the request may have been stored despite the missing
 response. It does not mean delivery failed. A broker error after submission is
 also treated conservatively because it can report a commit failure.
+
+A send, reply, resend or follow-up that the broker refuses before storing anything, such as one to an unknown target, is the exception: it reports `code: request_refused` and `submission: not_submitted`, and its `recovery` says what to change. Only a rate-limited send is `retryable`, after `retry_after_ms`. When an earlier attempt of the same call lost its response, a refused retry stays `outcome_unknown`.
 
 ## Recover a missed wake
 
