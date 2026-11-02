@@ -73,18 +73,19 @@ type peer struct {
 	relayGuidance             bool
 	handoffID, handoffMessage string
 	Agent
-	hash         string
-	epoch        int64
-	seen         time.Time
-	conn         *serverConn
-	ready        bool
-	enrolled     time.Time
-	notice       string
-	noticeRetry  time.Time
-	capabilities *deliveryCapabilities
-	savedState   string
-	stateSince   time.Time
-	cause        stateCause
+	hash          string
+	epoch         int64
+	seen          time.Time
+	conn          *serverConn
+	ready         bool
+	enrolled      time.Time
+	notice        string
+	noticeRetry   time.Time
+	capabilities  *deliveryCapabilities
+	savedState    string
+	stateSince    time.Time
+	cause         stateCause
+	codexObserved bool
 }
 type serverConn struct {
 	networkWake chan struct{}
@@ -426,6 +427,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		Permission      string                `json:"permission_mode"`
 		State           string                `json:"state"`
 		Cause           *stateCause           `json:"state_cause"`
+		CodexStatus     string                `json:"codex_status"`
 		Policy          string                `json:"policy"`
 		Target          string                `json:"target"`
 		Text            string                `json:"text"`
@@ -503,6 +505,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 			p.LaunchID = s.LaunchID
 			p.State = "starting"
 			p.cause = stateCause{}
+			p.codexObserved = false
 			p.BindingError = ""
 			p.Permission = "unknown"
 			p.AllowBypass = s.AllowBypass
@@ -611,6 +614,9 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		}
 		if a.Native != p.Native {
 			return nil, errors.New("hook belongs to another session")
+		}
+		if p.Host == "codex" && codexLifecycleState(a.CodexStatus) != "" {
+			p.codexObserved = true
 		}
 		if a.BindingError != "" {
 			if len(a.BindingError) > 1024 {
@@ -750,7 +756,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		if a.Permission != "" {
 			p.Permission = a.Permission
 		}
-		if a.State != "" {
+		if a.State != "" && !p.codexObserved {
 			if a.State != "ready" && a.State != "busy" && a.State != "blocked" && a.State != "starting" {
 				return nil, errors.New("invalid presence state")
 			}

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -69,23 +70,113 @@ func codexSessionSocket(ctx context.Context, dir, file, remote string, bypass bo
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	// One bounded worker keeps broker failures off every native transport path.
-	events := make(chan []byte, 8)
+	type startupPermission struct {
+		mode      string
+		delivered bool
+	}
+	type observation struct {
+		connection uint64
+		data       []byte
+		native     string
+		permission *startupPermission
+	}
+	events := make(chan struct{}, 1)
+	var observed sync.Mutex
+	var latest observation
+	live := make(map[uint64]observation)
+	var connections atomic.Uint64
+	lifecycleDone := make(chan struct{})
 	go func() {
+		defer close(lifecycleDone)
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case event := <-events:
-				if err := Hook(dir, file, bytes.NewReader(event), session.LaunchID); err != nil {
+			case <-events:
+			case <-ticker.C:
+			}
+			observed.Lock()
+			data := latest.data
+			permission := latest.permission
+			if data != nil && permission != nil && !permission.delivered {
+				var fields object
+				json.Unmarshal(data, &fields)
+				fields["permission_mode"] = permission.mode
+				fields["hook_event_name"] = "SessionStart"
+				data = raw(fields)
+			}
+			observed.Unlock()
+			if data == nil {
+				continue
+			}
+			if err := Hook(dir, file, bytes.NewReader(data), session.LaunchID); err != nil {
+				if saved, e := loadSession(file); e == nil && saved.BindingError != "" {
 					select {
 					case startupErrors <- err:
 					default:
 					}
+					return
 				}
+				continue
+			}
+			if permission != nil {
+				observed.Lock()
+				permission.delivered = true
+				observed.Unlock()
 			}
 		}
 	}()
 	server := &http.Server{ReadHeaderTimeout: 3 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8192, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection := connections.Add(1)
+		emit := func(data []byte, closed bool) {
+			if data == nil && !closed {
+				return
+			}
+			observed.Lock()
+			previous := latest
+			var fields object
+			json.Unmarshal(data, &fields)
+			permission, _ := fields["permission_mode"].(string)
+			if permission != "" {
+				delete(fields, "permission_mode")
+				data = raw(fields)
+			}
+			if closed {
+				delete(live, connection)
+			} else {
+				live[connection] = observation{connection: connection, data: data}
+			}
+			if len(live) == 0 {
+				if data != nil && connection >= latest.connection {
+					latest = observation{connection: connection, data: data}
+				}
+			} else {
+				latest = observation{}
+				for id, candidate := range live {
+					if id > latest.connection {
+						latest = candidate
+					}
+				}
+			}
+			var event struct {
+				Native string `json:"session_id"`
+			}
+			json.Unmarshal(latest.data, &event)
+			if event.Native == previous.native {
+				latest.permission = previous.permission
+			}
+			if permission != "" && connection == latest.connection {
+				latest.permission = &startupPermission{mode: permission}
+			}
+			latest.native = event.Native
+			observed.Unlock()
+			select {
+			case events <- struct{}{}:
+			default:
+			}
+		}
 		backend, err := dialCodex(ctx, remote)
 		if err != nil {
 			http.Error(w, "Codex backend unavailable", http.StatusBadGateway)
@@ -106,21 +197,13 @@ func codexSessionSocket(ctx context.Context, dir, file, remote string, bypass bo
 		go func() {
 			defer close(done)
 			defer front.Close()
+			defer func() { emit(observer.unavailable(), true) }()
 			for {
 				kind, data, err := backend.ReadMessage()
 				if err != nil || front.WriteMessage(kind, data) != nil {
 					return
 				}
-				if event := observer.response(data); event != nil {
-					select {
-					case events <- event:
-					default:
-						select {
-						case startupErrors <- fmt.Errorf("Codex session changes exceeded AX's startup queue; messaging may be unavailable"):
-						default:
-						}
-					}
-				}
+				emit(observer.response(data), false)
 			}
 		}()
 		for {
@@ -140,14 +223,24 @@ func codexSessionSocket(ctx context.Context, dir, file, remote string, bypass bo
 		<-done
 	})}
 	go server.Serve(limitListener(listener, 8))
-	return "unix://" + path, func() { cancel(); server.Close(); os.Remove(path) }, nil
+	return "unix://" + path, func() {
+		cancel()
+		server.Close()
+		select {
+		case <-lifecycleDone:
+		case <-time.After(time.Second):
+		}
+		os.Remove(path)
+	}, nil
 }
 
-// Observe only responses to the TUI's own conversation selection. Unsolicited
-// notifications, subagent creation, and thread/read results cannot bind AX.
+// Only the TUI's own conversation selection can bind the observation. Native
+// events for other threads, including session naming and subagents, are ignored.
 type codexSessionObserver struct {
 	mu      sync.Mutex
 	pending map[string]bool
+	native  string
+	status  string
 }
 
 func (o *codexSessionObserver) request(data []byte) {
@@ -167,23 +260,43 @@ func (o *codexSessionObserver) request(data []byte) {
 
 func (o *codexSessionObserver) response(data []byte) []byte {
 	var p packet
-	if json.Unmarshal(data, &p) != nil || p.Method != "" {
+	if json.Unmarshal(data, &p) != nil {
 		return nil
 	}
 	o.mu.Lock()
+	defer o.mu.Unlock()
+	if p.Method != "" {
+		var params struct {
+			Thread string                `json:"threadId"`
+			Status struct{ Type string } `json:"status"`
+		}
+		if p.Method != "thread/status/changed" || json.Unmarshal(p.Params, &params) != nil || o.native == "" || params.Thread != o.native {
+			return nil
+		}
+		if params.Status.Type == o.status || codexLifecycleState(params.Status.Type) == "" {
+			return nil
+		}
+		o.status = params.Status.Type
+		return o.event()
+	}
 	matched := o.pending[string(p.ID)]
 	delete(o.pending, string(p.ID))
-	o.mu.Unlock()
 	if !matched || p.Error != nil {
 		return nil
 	}
 	var result struct {
-		Thread  struct{ ID string }   `json:"thread"`
+		Thread struct {
+			ID     string
+			Status json.RawMessage
+		} `json:"thread"`
 		Sandbox struct{ Type string } `json:"sandbox"`
 	}
 	if json.Unmarshal(p.Result, &result) != nil || !validNative(result.Thread.ID) {
 		return nil
 	}
+	var status struct{ Type string }
+	_ = json.Unmarshal(result.Thread.Status, &status)
+	o.native, o.status = result.Thread.ID, status.Type
 	permission := "unknown"
 	switch result.Sandbox.Type {
 	case "readOnly":
@@ -193,7 +306,33 @@ func (o *codexSessionObserver) response(data []byte) []byte {
 	case "dangerFullAccess":
 		permission = "danger-full-access"
 	}
-	return raw(object{"hook_event_name": "SessionStart", "session_id": result.Thread.ID, "permission_mode": permission})
+	return raw(object{"hook_event_name": "SessionStart", "session_id": result.Thread.ID, "permission_mode": permission, "codex_status": o.status})
+}
+
+func (o *codexSessionObserver) event() []byte {
+	return raw(object{"hook_event_name": "CodexState", "session_id": o.native, "codex_status": o.status})
+}
+
+func (o *codexSessionObserver) unavailable() []byte {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.native == "" || codexLifecycleState(o.status) == "" {
+		return nil
+	}
+	o.status = "unavailable"
+	return o.event()
+}
+
+func codexLifecycleState(status string) string {
+	switch status {
+	case "active":
+		return "busy"
+	case "idle", "systemError":
+		return "ready"
+	case "notLoaded", "unavailable":
+		return "blocked"
+	}
+	return ""
 }
 
 func codexBypassRequest(data []byte) ([]byte, error) {

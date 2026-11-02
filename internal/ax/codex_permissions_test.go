@@ -141,6 +141,52 @@ func TestCodexNativeSelectionBindsBeforeFirstTurn(t *testing.T) {
 	}
 }
 
+func TestCodexObserverPreservesNewerPermissions(t *testing.T) {
+	for _, status := range []string{"idle", ""} {
+		t.Run("startup_status="+status, func(t *testing.T) {
+			dir := startTestServer(t)
+			s := Session{ID: randomID("agt_"), Secret: randomID(""), Name: "api", Host: "codex", Mesh: testMesh, Native: observedThread}
+			c := connectDiscoveryPeer(t, dir, s)
+			file := filepath.Join(dir, "session.json")
+			if err := saveSession(file, s); err != nil {
+				t.Fatal(err)
+			}
+			o := codexSessionObserver{pending: map[string]bool{}}
+			o.request(raw(object{"id": 1, "method": "thread/resume"}))
+			start := o.response(raw(object{"id": 1, "result": object{"thread": object{"id": observedThread, "status": object{"type": status}}, "sandbox": object{"type": "readOnly"}}}))
+			if err := Hook(dir, file, bytes.NewReader(start)); err != nil {
+				t.Fatal(err)
+			}
+			if a := discoveryList(t, c)[s.ID]; a.Permission != "read-only" {
+				t.Fatalf("startup permission: %+v", a)
+			}
+			bridge := &bridge{session: s, file: file}
+			meta := raw(object{"threadId": observedThread, "x-codex-turn-metadata": object{"thread_id": observedThread, "sandbox_mode": "danger-full-access"}})
+			if err := bridge.bind(context.Background(), c, meta); err != nil {
+				t.Fatal(err)
+			}
+			for _, response := range []object{
+				{"method": "thread/status/changed", "params": object{"threadId": observedThread, "status": object{"type": "active"}}},
+				{"method": "thread/status/changed", "params": object{"threadId": observedThread, "status": object{"type": "idle"}}},
+			} {
+				if err := Hook(dir, file, bytes.NewReader(o.response(raw(response)))); err != nil {
+					t.Fatal(err)
+				}
+				a := discoveryList(t, c)[s.ID]
+				if a.Permission != "danger-full-access" || safe(&peer{Agent: a}) {
+					t.Fatalf("%s reopened delivery with stale permissions: %+v", response["method"], a)
+				}
+			}
+			if err := Hook(dir, file, bytes.NewReader(o.unavailable())); err != nil {
+				t.Fatal(err)
+			}
+			if a := discoveryList(t, c)[s.ID]; a.Permission != "danger-full-access" || a.State != "blocked" {
+				t.Fatalf("disconnect replaced newer permissions: %+v", a)
+			}
+		})
+	}
+}
+
 func TestCodexBypassKeepsNativeArguments(t *testing.T) {
 	flag := "--dangerously-bypass-approvals-and-sandbox"
 	for _, tc := range []struct {
@@ -241,5 +287,131 @@ func TestCodexBypassSocketForwardsAndCloses(t *testing.T) {
 	cleanup()
 	if _, err = dialCodex(context.Background(), remote); err == nil {
 		t.Fatal("permission adapter remained available after cleanup")
+	}
+}
+
+func TestCodexStartupPermissionSurvivesCoalescingUntilDelivered(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "ax-permission-delivery-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	file := filepath.Join(dir, "session.json")
+	if err := saveSession(file, Session{Host: "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", socketPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	calls := make(chan net.Conn)
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			select {
+			case calls <- conn:
+			case <-ctx.Done():
+				conn.Close()
+				return
+			}
+		}
+	}()
+	next := func(wantPermission string) func(*rpcError) {
+		t.Helper()
+		var conn net.Conn
+		select {
+		case conn = <-calls:
+		case <-time.After(7 * time.Second):
+			t.Fatal("observer did not report lifecycle")
+		}
+		t.Cleanup(func() { conn.Close() })
+		conn.SetDeadline(time.Now().Add(3 * time.Second))
+		p, err := readFrame(conn)
+		var fields struct {
+			Permission string `json:"permission_mode"`
+		}
+		if err != nil || p.Method != "ax.lifecycle" || json.Unmarshal(p.Params, &fields) != nil {
+			t.Fatalf("invalid lifecycle report: %+v %v", p, err)
+		}
+		if fields.Permission != wantPermission {
+			t.Fatalf("permission = %q, want %q after coalescing/delivery", fields.Permission, wantPermission)
+		}
+		return func(refusal *rpcError) {
+			t.Helper()
+			response := packet{ID: p.ID, Error: refusal}
+			if refusal == nil {
+				response.Result = raw(object{"ok": true})
+			}
+			if err := writeFrame(conn, response); err != nil {
+				t.Fatal(err)
+			}
+			conn.Close()
+		}
+	}
+	backend := make(chan *websocket.Conn, 1)
+	native, err := net.Listen("unix", filepath.Join(dir, "native.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil); err == nil {
+			backend <- conn
+		}
+	})}
+	go server.Serve(native)
+	t.Cleanup(func() { server.Close() })
+	remote, cleanup, err := codexSessionSocket(ctx, dir, file, "unix://"+native.Addr().String(), false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	f := &codexLifecycleFixture{t: t, remote: remote, backend: backend}
+	back := f.connect("idle")
+	first := next("read-only")
+	f.status(back, observedThread, "active")
+	f.send(back, object{"method": "test/barrier"})
+	first(&rpcError{Code: -1, Message: "temporary broker failure"})
+	retry := next("read-only")
+	if err := f.front.WriteJSON(object{"id": 2, "method": "thread/resume", "params": object{"threadId": observedThread}}); err != nil {
+		t.Fatal(err)
+	}
+	var request packet
+	if err := back.ReadJSON(&request); err != nil || request.Method != "thread/resume" {
+		t.Fatalf("native reselection: %+v %v", request, err)
+	}
+	f.send(back, object{"id": 2, "result": object{"thread": object{"id": observedThread, "status": object{"type": "idle"}}, "sandbox": object{"type": "workspaceWrite"}}})
+	f.status(back, observedThread, "active")
+	f.send(back, object{"method": "test/barrier"})
+	retry(nil)
+	next("workspace-write")(nil)
+	next("")(nil)
+}
+
+func TestCodexPermissionDoesNotReplayFromOlderConnection(t *testing.T) {
+	f := newCodexLifecycleFixture(t)
+	f.connect("idle")
+	f.waitState("ready")
+	second := f.connect("active")
+	f.waitState("busy")
+	if err := f.bridge.call("ax.presence", object{"native_session_id": observedThread, "permission_mode": "danger-full-access", "state": "ready"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	second.Close()
+	f.front.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, _, err := f.front.ReadMessage(); err == nil {
+		t.Fatal("second native connection stayed open")
+	}
+	// Cover the worker's five-second replay as well as the disconnect event.
+	for deadline := time.Now().Add(6 * time.Second); time.Now().Before(deadline); {
+		if a := f.waitState("permission-blocked"); a.Permission != "danger-full-access" || safe(&peer{Agent: a.Agent}) {
+			t.Fatalf("older connection replayed its startup permission: %+v", a)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

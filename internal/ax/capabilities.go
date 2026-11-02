@@ -34,8 +34,8 @@ func sessionCapabilities(s Session) (*deliveryCapabilities, error) {
 		c.Boundary, c.Boundaries = "idle", []string{"idle"}
 		c.Lifecycle = append(c.Lifecycle, "busy", "idle", "blocked")
 	case "codex", "grok":
-		// These adapters do not yet prove idle transitions. Let their native
-		// queue own scheduling; do not infer idle from a tool call or binding.
+		// Codex's launcher augments this contract after observing native state.
+		// A tool call or binding alone cannot prove an idle transition.
 	default:
 		return nil, fmt.Errorf("no delivery contract for harness %q", s.Host)
 	}
@@ -65,4 +65,13 @@ func validateCapabilities(host string, c *deliveryCapabilities) error {
 
 func boundaryWait(p *peer) bool {
 	return p.capabilities != nil && p.capabilities.Boundary == "idle" && p.State != "ready"
+}
+
+func observedCapabilities(p *peer) *deliveryCapabilities {
+	if p.capabilities == nil || !p.codexObserved {
+		return p.capabilities
+	}
+	c := *p.capabilities
+	c.Lifecycle = []string{"session_bound", "busy", "idle"}
+	return &c
 }

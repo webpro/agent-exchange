@@ -71,7 +71,7 @@ func agentSnapshot(p *peer) Agent {
 		}
 		return a
 	}
-	a.Capabilities = p.capabilities
+	a.Capabilities = observedCapabilities(p)
 	a.Online = p.conn != nil && time.Since(p.seen) <= 15*time.Second
 	a.Connectivity = capabilities(p, a.Online)
 	if a.State == "exited" {
@@ -202,6 +202,8 @@ func blockedReason(c stateCause) string {
 		return "Recipient is blocked at a permission prompt; mail remains queued."
 	case c.Kind == "question":
 		return "Recipient is waiting for the user's answer to a question; mail remains queued."
+	case c.Kind == "codex_unavailable":
+		return "Recipient's native Codex connection is unavailable; mail remains queued."
 	}
 	return "Recipient is blocked; mail remains queued."
 }
@@ -220,7 +222,7 @@ func reportedCause(state string, c *stateCause) stateCause {
 	switch {
 	case state != "blocked" || c == nil:
 		return stateCause{}
-	case c.Kind == "question":
+	case c.Kind == "question" || c.Kind == "codex_unavailable":
 		return stateCause{Kind: c.Kind}
 	case c.Kind == "permission" && validToolName.MatchString(c.Tool):
 		return *c

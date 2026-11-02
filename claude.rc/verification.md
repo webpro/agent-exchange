@@ -9,6 +9,10 @@ Preview verification, September 19, 2026. Live host tests run on macOS arm64 in 
 | Grok Build | 1.0.34 | MCP and private native leader |
 | OpenCode | 1.18.31 | MCP and per-launch TUI plugin |
 
+## Codex turn observation
+
+November 3, 2026. Codex CLI 0.166.0 in a real TUI with an isolated mock provider reported busy during a turn and ready after it failed. With the broker suspended, the launcher exited 1.1 seconds after `/quit` was submitted. Idle observation left the session file unchanged over 11 seconds, and broker timeouts produced no lifecycle errors in the TUI.
+
 ## Live evidence
 
 Grok and OpenCode automatically connected, discovered each other, and completed a round trip containing `AX_GROK_OPENCODE_OK`. Both records reached `acknowledged`. The same named conversations were closed and resumed with unchanged native IDs; queued mail then reached the resumed recipient without replaying accepted messages.

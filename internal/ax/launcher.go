@@ -381,13 +381,14 @@ func Hook(dir, file string, in io.Reader, launch ...string) error {
 		expected = launch[0]
 	}
 	var input struct {
-		Session    string `json:"session_id"`
-		Event      string `json:"hook_event_name"`
-		Permission string `json:"permission_mode"`
-		Tool       string `json:"tool_name"`
-		File       string `json:"session_file"`
-		Source     string `json:"source"`
-		Transcript string `json:"transcript_path"`
+		Session     string `json:"session_id"`
+		Event       string `json:"hook_event_name"`
+		Permission  string `json:"permission_mode"`
+		Tool        string `json:"tool_name"`
+		File        string `json:"session_file"`
+		Source      string `json:"source"`
+		Transcript  string `json:"transcript_path"`
+		CodexStatus string `json:"codex_status"`
 	}
 	if err := json.NewDecoder(io.LimitReader(in, maxFrame)).Decode(&input); err != nil {
 		return err
@@ -404,13 +405,15 @@ func Hook(dir, file string, in io.Reader, launch ...string) error {
 	if e != nil {
 		return e
 	}
+	before := s
 	if expected != s.LaunchID {
 		return errors.New("AX hook belongs to an earlier launch")
 	}
 	if s.BindingError != "" {
 		return errors.New(s.BindingError)
 	}
-	if input.Event == "SessionStart" && (s.Native == "" || (!s.Started && s.LaunchID != "")) {
+	selection := input.Event == "SessionStart" || (s.Host == "codex" && input.Event == "CodexState")
+	if selection && (s.Native == "" || (!s.Started && s.LaunchID != "")) {
 		if s.Native != input.Session {
 			s.ClaudePending = ""
 			s.NativeFile = ""
@@ -421,7 +424,7 @@ func Hook(dir, file string, in io.Reader, launch ...string) error {
 		}
 	}
 	if input.Session != s.Native {
-		if input.Event == "SessionStart" {
+		if selection {
 			conflict := bindingConflict(s, input.Session)
 			s.Started, s.BindingError = false, conflict.Error()
 			if e = saveSession(file, s); e != nil {
@@ -442,13 +445,13 @@ func Hook(dir, file string, in io.Reader, launch ...string) error {
 	if persisted {
 		s.ClaudePending = ""
 	}
-	if input.Event == "SessionStart" {
+	if selection {
 		if s.Host == "pi" && input.File != "" && filepath.IsAbs(input.File) {
 			s.NativeFile = input.File
 		}
 		s.Started = true
 	}
-	if input.Event == "SessionStart" || persisted {
+	if (selection || persisted) && s != before {
 		if e = saveSession(file, s); e != nil {
 			return e
 		}
@@ -475,12 +478,18 @@ func Hook(dir, file string, in io.Reader, launch ...string) error {
 			cause = &stateCause{Kind: "question"}
 		}
 	}
+	if s.Host == "codex" && codexLifecycleState(input.CodexStatus) != "" {
+		state = codexLifecycleState(input.CodexStatus)
+		if state == "blocked" {
+			cause = &stateCause{Kind: "codex_unavailable"}
+		}
+	}
 	c, e := dial(socketPath(dir))
 	if e != nil {
 		return e
 	}
 	defer c.close()
-	return c.call("ax.lifecycle", object{"agent_id": s.ID, "secret": s.Secret, "native_session_id": input.Session, "launch_id": s.LaunchID, "permission_mode": input.Permission, "state": state, "state_cause": cause}, nil)
+	return c.call("ax.lifecycle", object{"agent_id": s.ID, "secret": s.Secret, "native_session_id": input.Session, "launch_id": s.LaunchID, "permission_mode": input.Permission, "state": state, "state_cause": cause, "codex_status": input.CodexStatus}, nil)
 }
 
 func bindingConflict(s Session, actual string) error {

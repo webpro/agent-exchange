@@ -22,6 +22,8 @@ Claude uses an experimental Channel and requires development Channel confirmatio
 
 Codex requires native queue support. AX owns the private app-server connection used by this integration; complete crash isolation for that backend remains pending.
 
+Codex sessions that expose native thread state advertise `busy` and `idle` lifecycle observation. Busy sessions continue accepting FIFO wakes. A lost observed connection holds mail; `systemError` remains ready because the backend accepts turns. Older backends without state events keep the conservative lifecycle contract.
+
 Grok runs through its native leader. Leader-mode restrictions apply, and standalone-only flags and sandbox modes need further adapter work. Complete backend crash isolation is also pending for Grok.
 
 OpenCode uses the full TUI plugin API. Its pure and mini modes do not load AX’s adapter. An existing `OPENCODE_TUI_CONFIG` override must currently contain JSON.
