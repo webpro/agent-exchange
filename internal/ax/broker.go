@@ -977,8 +977,9 @@ func (b *broker) replaceable(p, to *peer, replaces string) error {
 // The newest live message from the same sender to the same recipient that
 // replaces this one. It is computed whenever a message is read, so it seeks
 // its own index rather than the planner's choice of the recipient's mailbox.
+const liveReplacementCondition = `state NOT IN ('expired','refused','abandoned') AND NOT (state='queued' AND expires<=?)`
 const successorQuery = `SELECT id FROM messages INDEXED BY message_supersedes WHERE json_extract(data,'$.supersedes')=? AND sender=? AND recipient=?
- AND state NOT IN ('expired','refused','abandoned') AND NOT (state='queued' AND expires<=?) ORDER BY seq DESC LIMIT 1`
+ AND ` + liveReplacementCondition + ` ORDER BY seq DESC LIMIT 1`
 
 func (b *broker) successor(id, sender, recipient string) string {
 	var next string
@@ -1395,4 +1396,5 @@ func (b *broker) cleanup(now time.Time) {
 	_, _ = b.db.Exec(`DELETE FROM messages WHERE id IN (
  SELECT id FROM messages WHERE created<? AND state IN ('acknowledged','expired','refused','abandoned')
  ORDER BY created LIMIT 256)`, now.Add(-7*24*time.Hour).UnixMilli())
+	b.noticeStalled(now)
 }
