@@ -73,20 +73,23 @@ type peer struct {
 	relayGuidance             bool
 	handoffID, handoffMessage string
 	Agent
-	hash          string
-	epoch         int64
-	seen          time.Time
-	conn          *serverConn
-	ready         bool
-	enrolled      time.Time
-	notice        string
-	noticeRetry   time.Time
-	capabilities  *deliveryCapabilities
-	savedState    string
-	stateSince    time.Time
-	cause         stateCause
-	codexObserved bool
-	usage         *ContextUsage
+	hash            string
+	epoch           int64
+	seen            time.Time
+	conn            *serverConn
+	ready           bool
+	enrolled        time.Time
+	notice          string
+	noticeRetry     time.Time
+	capabilities    *deliveryCapabilities
+	savedState      string
+	stateSince      time.Time
+	cause           stateCause
+	codexObserved   bool
+	usage           *ContextUsage
+	claudeTurn      *nativeTurn
+	claudeTurns     map[string]claudeTurnWindow
+	claudeStartedAt int64
 }
 type serverConn struct {
 	networkWake chan struct{}
@@ -429,6 +432,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		State              string                `json:"state"`
 		Cause              *stateCause           `json:"state_cause"`
 		CodexStatus        string                `json:"codex_status"`
+		ClaudeTurn         *nativeTurn           `json:"claude_turn"`
 		ContextUsage       *ContextUsage         `json:"context_usage"`
 		ContextCompactedAt int64                 `json:"context_compacted_at_ms"`
 		Policy             string                `json:"policy"`
@@ -509,6 +513,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 			p.State = "starting"
 			p.cause = stateCause{}
 			p.codexObserved = false
+			p.claudeTurn, p.claudeTurns, p.claudeStartedAt = nil, nil, 0
 			p.usage = nil
 			p.BindingError = ""
 			p.Permission = "unknown"
@@ -631,6 +636,8 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		}
 		if p.Host == "codex" && codexLifecycleState(a.CodexStatus) != "" {
 			p.codexObserved = true
+		} else if p.Host == "claude" && validNativeTurn(a.ClaudeTurn) {
+			a.State = p.observeClaudeTurn(a.ClaudeTurn)
 		}
 		if a.BindingError != "" {
 			if len(a.BindingError) > 1024 {
@@ -770,7 +777,8 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		if a.Permission != "" {
 			p.Permission = a.Permission
 		}
-		if a.State != "" && !p.codexObserved {
+		// Tool metadata proves binding; native turn observations own readiness.
+		if a.State != "" && !p.codexObserved && p.claudeTurn == nil {
 			if a.State != "ready" && a.State != "busy" && a.State != "blocked" && a.State != "starting" {
 				return nil, errors.New("invalid presence state")
 			}

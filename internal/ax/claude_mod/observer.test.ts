@@ -81,3 +81,36 @@ test('broker absence or process failure cannot fail the native event', async ($,
   expect(await $.session.measure(measure)).toEqual({ changed: ['context'] });
   expect(attempts).toBe(1);
 });
+
+for (const answer of ['', 'partial generation']) {
+  test('reports aborted turn: ' + (answer ? 'generation' : 'tool'), async ($, on) => {
+    const { sent } = fixture(on);
+    on('turn.complete', ($, e) => ({ text: e.answer }));
+    const result = await $.turn.complete({ answer, durationMs: 12, isAborted: true, reason: 'aborted', turnId: 'turn-123' });
+    expect(result).toEqual({ text: answer });
+    expect(sent.length).toBe(1);
+    expect(sent[0].hook_event_name).toBe('ClaudeTurnComplete');
+    expect(sent[0].claude_turn.id).toBe('turn-123');
+    expect(sent[0].claude_turn.status).toBe('interrupted');
+    expect(sent[0].claude_turn.at_ms).toBeGreaterThan(0);
+  });
+}
+
+test('normal completion and subagent interruption emit no interrupted report', async ($, on) => {
+  const { sent } = fixture(on);
+  on('turn.complete', ($, e) => ({ text: e.answer }));
+  await $.turn.complete({ answer: 'OK', durationMs: 12, isAborted: false, reason: 'answer', turnId: 'normal' });
+  await $.turn.complete({ answer: '', durationMs: 12, isAborted: true, reason: 'aborted', turnId: 'child-turn', agentId: 'child' });
+  expect(sent.length).toBe(1);
+  expect(sent[0].claude_turn.status).toBe('completed');
+});
+
+test('queued main turn reports busy after an aborted turn without UserPromptSubmit', async ($, on) => {
+  const { sent } = fixture(on);
+  on('turn.start', ($, e) => ({ turnId: e.turnId }));
+  on('turn.complete', ($, e) => ({ text: e.answer }));
+  await $.turn.start({ turnId: 'first', text: 'sleep' });
+  await $.turn.complete({ answer: '', durationMs: 12, isAborted: true, reason: 'aborted', turnId: 'first' });
+  await $.turn.start({ turnId: 'queued', text: 'queued essay' });
+  expect(sent[sent.length - 1].hook_event_name).toBe('ClaudeTurnStart');
+});
