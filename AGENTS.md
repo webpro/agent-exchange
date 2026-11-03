@@ -41,6 +41,8 @@ ax claude --name api
 ax codex --name web
 ```
 
+In Claude's window, submit any prompt first so AX can learn its permission mode and release held mail.
+
 Ask Codex: **“Ask api whether the schema is ready.”** Both agents connect automatically. Names work across repositories for the same OS user.
 
 Other supported harnesses join with `ax grok --name worker`, `ax opencode --name editor`, or `ax pi --name worker`. AX consumes the name option and passes other arguments through to the native harness. Use the native resume syntax to adopt an existing conversation:

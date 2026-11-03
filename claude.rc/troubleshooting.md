@@ -15,7 +15,7 @@ On Windows, AX and both harnesses must run in the same WSL 2 distribution. If th
 
 `ax agents` names the condition. `unstarted` means the session enrolled but its harness has not yet reported it running; `inactive` means the harness is running but AX has not completed MCP tool discovery and native session confirmation.
 
-Direct Claude launches, resumed conversations, and Codex become reachable after native startup confirmation and MCP tool discovery. Recognized option-only Claude pane spawns also run one fixed AX setup turn before receiving queued tasks. MCP discovery alone does not release that startup hold. Once the model calls an AX tool, the hold clears even if the call fails during a resource cooldown; ordinary activation resumes after the cooldown. Older AX releases may need a single `list_agents` call to finish connecting. Do not leave the agent polling for another agent to join.
+Direct Claude launches, resumed conversations, and Codex become reachable after native startup confirmation and MCP tool discovery. Claude can still hold mail until its first prompt reports the permission mode. Recognized option-only Claude pane spawns also run one fixed AX setup turn before receiving queued tasks. MCP discovery alone does not release that startup hold. Once the model calls an AX tool, the hold clears even if the call fails during a resource cooldown; ordinary activation resumes after the cooldown. Older AX releases may need a single `list_agents` call to finish connecting. Do not leave the agent polling for another agent to join.
 
 ## A resumed conversation has a binding conflict
 
@@ -84,6 +84,8 @@ agent-view guard. Existing saved conversations and mailbox state are preserved.
 ## The message is held by policy
 
 An unknown permission mode or an unapproved bypass mode can hold mail. The receiving harness’s permissions still apply to delegated work. Inspect the launch settings before changing policy.
+
+For Claude, submit any prompt in its window to report the mode. This releases the permission hold when the mode is supported.
 
 The terminal owner can deliberately hold or accept incoming mail:
 

@@ -120,7 +120,7 @@
       <li><span class="step-number">01</span><div><h3>Install from your terminal</h3><pre><code>curl -fsSL https://useax.dev/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 ax doctor</code></pre><a class="small-link" href="/docs/installation">Platform requirements and setup ↗</a></div></li>
-      <li><span class="step-number">02</span><div><h3>Give each agent a role</h3><p>Run each command in a separate terminal.</p><div class="command-pair"><div><span class="code-label">Claude Code · API</span><pre><code>ax claude -n api</code></pre></div><div><span class="code-label">OpenCode · UI</span><pre><code>ax opencode -n web</code></pre></div><div><span class="code-label">Grok Build · Review</span><pre><code>ax grok -n reviewer</code></pre></div></div></div></li>
+      <li><span class="step-number">02</span><div><h3>Give each agent a role</h3><p>Run each command in a separate terminal. Submit any prompt in Claude's window first to release held mail.</p><div class="command-pair"><div><span class="code-label">Claude Code · API</span><pre><code>ax claude -n api</code></pre></div><div><span class="code-label">OpenCode · UI</span><pre><code>ax opencode -n web</code></pre></div><div><span class="code-label">Grok Build · Review</span><pre><code>ax grok -n reviewer</code></pre></div></div></div></li>
       <li><span class="step-number">03</span><div><h3>Ask OpenCode to coordinate</h3><p class="ask-example">“Ask api for the response format. Build the UI, then ask reviewer to check your changes.”</p><p>OpenCode gets the API details from Claude and sends its changes to Grok for review. Replies return to the same sessions.</p></div></li>
     </ol>
   </section>
