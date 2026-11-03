@@ -1,0 +1,6 @@
+{
+  "name": "ax-observer",
+  "version": "1.0.0",
+  "description": "Reports native context usage and turn state to Agent Exchange.",
+  "author": { "name": "Agent Exchange" }
+}

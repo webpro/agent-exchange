@@ -416,33 +416,34 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 	}
 	var a struct {
 		Session
-		Provenance      json.RawMessage       `json:"provenance"`
-		Data            json.RawMessage       `json:"data"`
-		PeerEvents      bool                  `json:"peer_events"`
-		AdapterVersion  string                `json:"adapter_version"`
-		HandoffID       string                `json:"handoff_id"`
-		ThreadFilter    string                `json:"thread_id"`
-		StateFilter     string                `json:"delivery_state"`
-		Version         string                `json:"version"`
-		Native          string                `json:"native_session_id"`
-		Permission      string                `json:"permission_mode"`
-		State           string                `json:"state"`
-		Cause           *stateCause           `json:"state_cause"`
-		CodexStatus     string                `json:"codex_status"`
-		ContextUsage    *ContextUsage         `json:"context_usage"`
-		Policy          string                `json:"policy"`
-		Target          string                `json:"target"`
-		Text            string                `json:"text"`
-		ClientID        string                `json:"client_message_id"`
-		MessageID       string                `json:"message_id"`
-		AfterMessage    string                `json:"after_message_id"`
-		NotificationID  string                `json:"notification_id"`
-		Receipt         string                `json:"receipt"`
-		TTL             json.RawMessage       `json:"ttl_seconds"`
-		AfterSeq        json.RawMessage       `json:"after_seq"`
-		Mesh            string                `json:"mesh"`
-		LifecycleEvents bool                  `json:"lifecycle_events"`
-		Capabilities    *deliveryCapabilities `json:"delivery_capabilities"`
+		Provenance         json.RawMessage       `json:"provenance"`
+		Data               json.RawMessage       `json:"data"`
+		PeerEvents         bool                  `json:"peer_events"`
+		AdapterVersion     string                `json:"adapter_version"`
+		HandoffID          string                `json:"handoff_id"`
+		ThreadFilter       string                `json:"thread_id"`
+		StateFilter        string                `json:"delivery_state"`
+		Version            string                `json:"version"`
+		Native             string                `json:"native_session_id"`
+		Permission         string                `json:"permission_mode"`
+		State              string                `json:"state"`
+		Cause              *stateCause           `json:"state_cause"`
+		CodexStatus        string                `json:"codex_status"`
+		ContextUsage       *ContextUsage         `json:"context_usage"`
+		ContextCompactedAt int64                 `json:"context_compacted_at_ms"`
+		Policy             string                `json:"policy"`
+		Target             string                `json:"target"`
+		Text               string                `json:"text"`
+		ClientID           string                `json:"client_message_id"`
+		MessageID          string                `json:"message_id"`
+		AfterMessage       string                `json:"after_message_id"`
+		NotificationID     string                `json:"notification_id"`
+		Receipt            string                `json:"receipt"`
+		TTL                json.RawMessage       `json:"ttl_seconds"`
+		AfterSeq           json.RawMessage       `json:"after_seq"`
+		Mesh               string                `json:"mesh"`
+		LifecycleEvents    bool                  `json:"lifecycle_events"`
+		Capabilities       *deliveryCapabilities `json:"delivery_capabilities"`
 	}
 	if e := json.Unmarshal(params, &a); e != nil {
 		if keyedWrite(method) {
@@ -620,6 +621,13 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		}
 		if a.ContextUsage.valid() && (p.usage == nil || a.ContextUsage.ObservedAt >= p.usage.ObservedAt) {
 			p.usage = a.ContextUsage
+		}
+		if p.Host == "claude" && a.ContextCompactedAt > 0 && a.ContextCompactedAt <= maxSequence && (p.usage == nil || a.ContextCompactedAt >= p.usage.ObservedAt) {
+			u := &ContextUsage{ObservedAt: a.ContextCompactedAt}
+			if p.usage != nil {
+				u.WindowTokens = p.usage.WindowTokens
+			}
+			p.usage = u
 		}
 		if p.Host == "codex" && codexLifecycleState(a.CodexStatus) != "" {
 			p.codexObserved = true

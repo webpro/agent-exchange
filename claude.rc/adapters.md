@@ -16,6 +16,8 @@ Use a native API, lifecycle hook, or trusted plugin to identify the conversation
 
 Context observations use `ax.lifecycle.context_usage`: optional `context_used_tokens` and `context_window_tokens`, with `context_observed_at_ms`. A newer snapshot replaces missing counts too. Codex reports `last.totalTokens` and `modelContextWindow` from the selected thread's `thread/tokenUsage/updated`; cumulative totals are not context usage. Unsupported harnesses omit the counts.
 
+On Claude Code 2.1.290 or later, AX loads its bundled `ax-observer` mod from a verified private directory for that launch, then removes that directory on exit. It reads `$.session.usage().context`, whose used count includes input and cache tokens. AX's PostCompact hook clears the used count; neither it nor SessionStart after compaction changes readiness. The mod preserves the status line and channel messages. Older versions and managed mod restrictions leave observations unavailable; AX does not bypass sideload policy.
+
 For a Go integration, `startAdapterHost` accepts a native wake callback. Return success only when the host confirms acceptance. Grok demonstrates this with ACP prompt IDs and native queue events; a socket write alone is insufficient.
 
 For a native plugin, the same private per-launch Unix socket exposes:

@@ -13,7 +13,7 @@ import (
 // child that TestAttachedCLIExitsWhileStdinIsIdle re-executes with the fixture's
 // home, and TestMain runs in that child too.
 func TestMain(m *testing.M) {
-	for _, name := range []string{"AX_LAUNCH_ID", "AX_SESSION_FILE", "AX_ALLOW_BYPASS", "AX_EXTERNAL", "AX_DELIVERY_BOUNDARY"} {
+	for _, name := range []string{"AX_LAUNCH_ID", "AX_SESSION_FILE", "AX_ALLOW_BYPASS", "AX_EXTERNAL", "AX_DELIVERY_BOUNDARY", "AX_CLAUDE_OBSERVER"} {
 		os.Unsetenv(name)
 	}
 	os.Exit(m.Run())

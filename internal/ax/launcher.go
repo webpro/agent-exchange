@@ -227,7 +227,7 @@ func launch(ctx context.Context, dir, host string, args []string, spawnToken str
 		config := object{"mcpServers": object{"ax": object{"command": exe, "args": []string{"bridge"}, "alwaysLoad": true, "env": object{"AX_HOME": dir, "AX_SESSION_FILE": path, "AX_LAUNCH_ID": s.LaunchID}}}}
 		hook := object{"type": "command", "command": hookCommand, "timeout": 3}
 		hooks := object{}
-		for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Stop"} {
+		for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Stop", "PostCompact"} {
 			hooks[event] = []object{{"hooks": []object{hook}}}
 		}
 		// Agent view can re-host Claude without its channel opt-in, leaving MCP
@@ -241,6 +241,13 @@ func launch(ctx context.Context, dir, host string, args []string, spawnToken str
 			}
 		}
 		argv = []string{"--mcp-config", string(raw(config)), "--settings", string(raw(settings)), "--dangerously-load-development-channels", "server:ax", "--allowedTools", strings.Join(allowed, ","), "--append-system-prompt", instructions}
+		if !nativeHelp(nativeArgs) && supportsClaudeMod(ctx, nativeBin) {
+			if plugin, err := installClaudeMod(dir); err == nil {
+				defer os.RemoveAll(plugin)
+				argv = append(argv, "--plugin-dir", plugin)
+				env = append(env, "AX_CLAUDE_OBSERVER="+exe)
+			}
+		}
 		if len(nativeArgs) == 0 && s.Native != "" {
 			nativeArgs = []string{"--resume", s.Native}
 			if s.ClaudePending != "" {
@@ -459,10 +466,16 @@ func Hook(dir, file string, in io.Reader, launch ...string) error {
 	}
 	lock.Close()
 	state := "busy"
+	var compactedAt int64
 	var cause *stateCause
 	switch input.Event {
 	case "ContextUsage":
 		state = ""
+	case "PostCompact":
+		state = ""
+		if s.Host == "claude" {
+			compactedAt = time.Now().UnixMilli()
+		}
 	case "SessionStart":
 		state = "ready"
 		if s.Host == "claude" && input.Source == "compact" {
@@ -492,7 +505,7 @@ func Hook(dir, file string, in io.Reader, launch ...string) error {
 		return e
 	}
 	defer c.close()
-	return c.call("ax.lifecycle", object{"agent_id": s.ID, "secret": s.Secret, "native_session_id": input.Session, "launch_id": s.LaunchID, "permission_mode": input.Permission, "state": state, "state_cause": cause, "codex_status": input.CodexStatus, "context_usage": input.ContextUsage}, nil)
+	return c.call("ax.lifecycle", object{"agent_id": s.ID, "secret": s.Secret, "native_session_id": input.Session, "launch_id": s.LaunchID, "permission_mode": input.Permission, "state": state, "state_cause": cause, "codex_status": input.CodexStatus, "context_usage": input.ContextUsage, "context_compacted_at_ms": compactedAt}, nil)
 }
 
 func bindingConflict(s Session, actual string) error {
