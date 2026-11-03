@@ -49,42 +49,66 @@ type deliveryNotice struct {
 
 func renderNotice(n deliveryNotice) deliveryNotice {
 	if n.State == "interrupted" {
-		n.Guidance = fmt.Sprintf("A Codex turn for %s was interrupted. Message %s remains unresolved at delivery state %s; task completion is unknown. Tell the user which peer and message are affected and ask how to proceed. Do not resend or restart work automatically.", n.Recipient, n.MessageID, n.Delivery)
+		n.Guidance = fmt.Sprintf("A turn for %s was interrupted. Message %s remains unresolved at delivery state %s; task completion is unknown. Tell the user which peer and message are affected and ask how to proceed. Do not resend or restart work automatically.", n.Recipient, n.MessageID, n.Delivery)
 	}
 	if n.State == "stalled" && n.Guidance == "" {
 		cause := "The recipient reports ready, but this harness does not report busy turns, so it may still be working or its harness may have lost the wake."
 		if n.IdleObserved {
 			cause = "The recipient has reported ready and idle for the whole stall window, so its harness may have lost the wake."
 		}
-		n.Guidance = fmt.Sprintf("Message %s to %s reached %s %d minutes ago and has not been fetched or acknowledged. %s Check the recipient's terminal or worktree. If it is not working on the message, ask the user to have it call list_pending once. AX does not offer the message again, and resending could run the task twice.", n.MessageID, n.Recipient, n.Delivery, n.Minutes, cause)
+		if n.TurnID != "" {
+			cause = "The recipient's turn was interrupted and it has since reported ready and idle for the whole stall window. Ask the user how to proceed; do not restart work automatically."
+		}
+		n.Guidance = fmt.Sprintf("Message %s to %s remains unresolved at %s; its last delivery event was %d minutes ago. %s Check the recipient's terminal or worktree. If it is not working on the message, ask the user to have it call list_pending once. AX does not offer the message again, and resending could run the task twice.", n.MessageID, n.Recipient, n.Delivery, n.Minutes, cause)
 	}
 	return n
 }
 
-func (b *broker) noticeInterrupted(p *peer, turn nativeTurn) error {
+func (b *broker) noticeInterrupted(p *peer, turn nativeTurn, window *claudeTurnWindow) error {
+	scope := ""
+	args := []any{p.ID, turn.At, turn.At, turn.At, turn.At}
+	if p.Host == "claude" {
+		if window == nil {
+			return nil
+		}
+		scope = ` AND (SELECT max(at) FROM events WHERE message=m.id AND state='handoff_started')>=?
+ AND (SELECT max(at) FROM events WHERE message=m.id AND state='handoff_started')<?`
+		until := turn.At
+		if window.until > 0 {
+			until = min(until, window.until)
+		}
+		args = append(args, window.since, until)
+	}
 	// The launcher replays an interruption after a broker restart. An offer made
 	// after the turn stopped is not part of it.
 	rows, err := b.db.Query(`SELECT m.id,m.sender,m.state,substr(json_extract(m.data,'$.text'),1,100),
- (SELECT count(*) FROM events WHERE message=m.id AND state='handoff_started')
+ (SELECT count(*) FROM events WHERE message=m.id AND state='handoff_started'),
+ coalesce((SELECT max(at) FROM events WHERE message=m.id AND state='handoff_started'),0)
  FROM messages m JOIN agents a ON a.id=m.sender
  WHERE m.recipient=? AND m.created<=? AND (m.state!='queued' OR m.expires>?)
  AND coalesce((SELECT max(at) FROM events WHERE message=m.id AND state='handoff_started'),0)<=?
  AND m.state NOT IN ('acknowledged','expired','refused','abandoned')
  AND coalesce(json_extract(a.data,'$.kind'),'')!='relay' AND json_extract(a.data,'$.remote') IS NULL
- AND json_extract(m.data,'$.network_origin') IS NULL`, p.ID, turn.At, turn.At, turn.At)
+ AND json_extract(m.data,'$.network_origin') IS NULL
+ AND NOT EXISTS (SELECT 1 FROM messages INDEXED BY message_supersedes
+ WHERE json_extract(data,'$.supersedes')=m.id AND sender=m.sender AND recipient=m.recipient
+ AND `+liveReplacementCondition+`)`+scope, args...)
 	if err != nil {
 		return err
 	}
 	var notices []deliveryNotice
 	var senders []string
+	var deferred []bool
 	for rows.Next() {
 		n := deliveryNotice{State: "interrupted", Recipient: p.Name, TurnID: turn.ID, At: turn.At}
 		var sender string
-		if err = rows.Scan(&n.MessageID, &sender, &n.Delivery, &n.Preview, &n.Attempt); err != nil {
+		var offered int64
+		if err = rows.Scan(&n.MessageID, &sender, &n.Delivery, &n.Preview, &n.Attempt, &offered); err != nil {
 			break
 		}
 		n.ID = "ntf_" + digest(fmt.Sprintf("%s:interrupted:%d", n.MessageID, n.Attempt))[:32]
 		notices, senders = append(notices, n), append(senders, sender)
+		deferred = append(deferred, window != nil && offered >= window.start)
 	}
 	if err == nil {
 		err = rows.Err()
@@ -99,6 +123,14 @@ func (b *broker) noticeInterrupted(p *peer, turn nativeTurn) error {
 	}
 	defer tx.Rollback()
 	for i, n := range notices {
+		if _, err = tx.Exec(`INSERT INTO interrupted_offers(message,attempt,turn_id,at,deferred) VALUES(?,?,?,?,?)
+ ON CONFLICT(message,attempt) DO UPDATE SET turn_id=excluded.turn_id,at=excluded.at,deferred=excluded.deferred
+ WHERE interrupted_offers.deferred=1 AND excluded.deferred=0`, n.MessageID, n.Attempt, n.TurnID, n.At, deferred[i]); err != nil {
+			return err
+		}
+		if deferred[i] {
+			continue
+		}
 		if err = insertNotice(tx, senders[i], n); err != nil {
 			return err
 		}
@@ -156,9 +188,12 @@ func (b *broker) noticeStalled(now time.Time) {
 		return
 	}
 	rows, err := b.db.Query(`SELECT m.id,m.sender,m.recipient,m.state,json_extract(a.data,'$.name'),substr(json_extract(m.data,'$.text'),1,100),
- (SELECT max(at) FROM events WHERE message=m.id),(SELECT count(*) FROM events WHERE message=m.id AND state='handoff_started')
+ (SELECT max(at) FROM events WHERE message=m.id),(SELECT count(*) FROM events WHERE message=m.id AND state='handoff_started'),
+ coalesce(i.turn_id,(SELECT json_extract(n.data,'$.turn_id') FROM notifications n WHERE n.message=m.id AND json_extract(n.data,'$.status')='interrupted'
+ AND json_extract(n.data,'$.offer_attempt')=(SELECT count(*) FROM events WHERE message=m.id AND state='handoff_started') LIMIT 1),'')
  FROM messages m JOIN agents a ON a.id=m.recipient
- WHERE m.recipient IN (?`+strings.Repeat(",?", len(recipients)-1)+`) AND m.state IN ('wake_accepted','channel_written')
+ LEFT JOIN interrupted_offers i ON i.message=m.id AND i.attempt=(SELECT count(*) FROM events WHERE message=m.id AND state='handoff_started')
+ WHERE m.recipient IN (?`+strings.Repeat(",?", len(recipients)-1)+`) AND (m.state IN ('wake_accepted','channel_written') OR (m.state='content_served' AND i.deferred=1))
  AND (SELECT max(at) FROM events WHERE message=m.id)<=?
  AND NOT EXISTS (SELECT 1 FROM messages INDEXED BY message_supersedes
  WHERE json_extract(data,'$.supersedes')=m.id AND sender=m.sender AND recipient=m.recipient
@@ -172,7 +207,7 @@ func (b *broker) noticeStalled(now time.Time) {
 		var sender, recipient string
 		var last int64
 		n := deliveryNotice{State: "stalled", At: now.UnixMilli()}
-		if rows.Scan(&n.MessageID, &sender, &recipient, &n.Delivery, &n.Recipient, &n.Preview, &last, &n.Attempt) != nil {
+		if rows.Scan(&n.MessageID, &sender, &recipient, &n.Delivery, &n.Recipient, &n.Preview, &last, &n.Attempt, &n.TurnID) != nil {
 			break
 		}
 		n.ID = "ntf_" + digest(fmt.Sprintf("%s:stalled:%d", n.MessageID, n.Attempt))[:32]
@@ -182,9 +217,9 @@ func (b *broker) noticeStalled(now time.Time) {
 			if since.IsZero() {
 				since = p.enrolled
 			}
-			// Codex can consume a wake in a failed turn without fetching it. Its
-			// healthy queue resumes promptly, so a full ready window proves a stall.
-			if p.codexObserved {
+			// A failed Codex turn or an observed interruption can strand accepted
+			// mail. Require a full idle window instead of dismissing that offer.
+			if p.codexObserved || n.TurnID != "" {
 				if now.Sub(since) < stallThreshold {
 					continue
 				}

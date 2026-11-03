@@ -155,7 +155,7 @@ func readyBefore(b *broker, id string) {
 }
 
 func TestInterruptedNoticesAfterQueuedDeadline(t *testing.T) {
-	for _, host := range []string{"codex"} {
+	for _, host := range []string{"codex", "claude"} {
 		for _, state := range []string{"queued", "handoff_started", "delivery_uncertain", "wake_accepted", "channel_written", "content_served"} {
 			t.Run(host+"/"+state, func(t *testing.T) {
 				b, _ := localBroker(t)
@@ -183,7 +183,12 @@ func TestInterruptedNoticesAfterQueuedDeadline(t *testing.T) {
 				if _, err := b.db.Exec("UPDATE events SET at=1000 WHERE message=?", m.ID); err != nil {
 					t.Fatal(err)
 				}
-				observedLifecycle(t, b, recipient, "ready", "idle", object{"id": "turn", "status": "interrupted", "at_ms": 3000})
+				if host == "claude" {
+					nativeClaudeTurn(t, b, recipient, "turn", "inProgress", 2000)
+					nativeClaudeTurn(t, b, recipient, "turn", "interrupted", 3000)
+				} else {
+					observedLifecycle(t, b, recipient, "ready", "idle", object{"id": "turn", "status": "interrupted", "at_ms": 3000})
+				}
 				notices, err := b.notices(sender.ID)
 				if err != nil {
 					t.Fatal(err)
@@ -201,6 +206,32 @@ func TestInterruptedNoticesAfterQueuedDeadline(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestClaudeDeferredNoticeAfterQueuedDeadline(t *testing.T) {
+	b, _ := localBroker(t)
+	sender, from, _ := noticeSender(t, b, true)
+	recipient, to := claudeInterruptRecipient(t, b)
+	b.peers[recipient.ID].enrolled = time.UnixMilli(500)
+	nativeClaudeTurn(t, b, recipient, "turn", "inProgress", 1000)
+	m := offeredAt(t, b, from, to, "mid-turn task", 2000)
+	request(t, b, to, "ax.get_message", object{"message_id": m.ID})
+	if _, err := b.db.Exec("UPDATE events SET at=2000 WHERE message=?", m.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.db.Exec("UPDATE messages SET expires=3000 WHERE id=?", m.ID); err != nil {
+		t.Fatal(err)
+	}
+	nativeClaudeTurn(t, b, recipient, "turn", "interrupted", 4000)
+	if notices, err := b.notices(sender.ID); err != nil || len(notices) != 0 {
+		t.Fatalf("mid-turn mail needs the full idle window: %+v %v", notices, err)
+	}
+	b.noticeStalled(time.Now().Add(6 * time.Minute))
+	notices, err := b.notices(sender.ID)
+	if err != nil || len(notices) != 1 || notices[0].MessageID != m.ID || notices[0].State != "stalled" || notices[0].Delivery != "content_served" {
+		t.Fatalf("queued deadline hid deferred interrupted work: %+v %v", notices, err)
+	}
+	assertMessageState(t, b, m.ID, "content_served")
 }
 
 func TestStalledOfferNotifiesSenderOncePerOffer(t *testing.T) {

@@ -94,6 +94,7 @@ type peer struct {
 	claudeTurn         *nativeTurn
 	claudeTurns        map[string]claudeTurnWindow
 	claudeStartedAt    int64
+	claudeEndedAt      int64
 	interruptedNotices bool
 }
 type serverConn struct {
@@ -186,6 +187,8 @@ func openBroker(dir string) (*broker, error) {
 	if _, e = db.Exec(`BEGIN;
  CREATE TABLE IF NOT EXISTS notifications(id TEXT PRIMARY KEY,recipient TEXT NOT NULL REFERENCES agents(id),message TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,data TEXT NOT NULL,acknowledged INTEGER NOT NULL DEFAULT 0);
  CREATE INDEX IF NOT EXISTS pending_notifications ON notifications(recipient) WHERE acknowledged=0;
+ CREATE INDEX IF NOT EXISTS notification_message ON notifications(message);
+ CREATE TABLE IF NOT EXISTS interrupted_offers(message TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,attempt INTEGER NOT NULL,turn_id TEXT NOT NULL,at INTEGER NOT NULL,deferred INTEGER NOT NULL,PRIMARY KEY(message,attempt));
  PRAGMA user_version=4; COMMIT;`); e != nil {
 		return fail(e)
 	}
@@ -524,7 +527,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 			p.cause = stateCause{}
 			p.codexObserved = false
 			p.interruptedNoticed = ""
-			p.claudeTurn, p.claudeTurns, p.claudeStartedAt = nil, nil, 0
+			p.claudeTurn, p.claudeTurns, p.claudeStartedAt, p.claudeEndedAt = nil, nil, 0, 0
 			p.usage = nil
 			p.BindingError = ""
 			p.Permission = "unknown"
@@ -647,16 +650,22 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 			}
 			p.usage = u
 		}
+		var interrupted *nativeTurn
 		if p.Host == "codex" && codexLifecycleState(a.CodexStatus) != "" {
 			p.codexObserved = true
-			if validNativeTurn(a.CodexInterrupted) && a.CodexInterrupted.Status == "interrupted" && a.CodexInterrupted.ID != p.interruptedNoticed {
-				if err := b.noticeInterrupted(p, *a.CodexInterrupted); err != nil {
-					return nil, err
-				}
-				p.interruptedNoticed = a.CodexInterrupted.ID
-			}
+			interrupted = a.CodexInterrupted
 		} else if p.Host == "claude" && validNativeTurn(a.ClaudeTurn) {
-			a.State = p.observeClaudeTurn(a.ClaudeTurn)
+			var err error
+			a.State, err = b.observeClaudeTurn(p, a.ClaudeTurn)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if validNativeTurn(interrupted) && interrupted.Status == "interrupted" && interrupted.ID != p.interruptedNoticed {
+			if err := b.noticeInterrupted(p, *interrupted, nil); err != nil {
+				return nil, err
+			}
+			p.interruptedNoticed = interrupted.ID
 		}
 		if a.BindingError != "" {
 			if len(a.BindingError) > 1024 {

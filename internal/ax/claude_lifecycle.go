@@ -19,40 +19,70 @@ func validNativeTurn(t *nativeTurn) bool {
 
 type claudeTurnWindow struct {
 	start int64
+	since int64
+	until int64
 	ended int64
 }
 
-func (p *peer) observeClaudeTurn(turn *nativeTurn) string {
+func (b *broker) observeClaudeTurn(p *peer, turn *nativeTurn) (string, error) {
 	if !validNativeTurn(turn) {
-		return ""
+		return "", nil
 	}
 	window, observed := p.claudeTurns[turn.ID]
 	if window.ended != 0 {
-		return ""
+		return "", nil
 	}
 	if turn.Status == "inProgress" {
 		if observed {
-			return ""
+			return "", nil
 		}
-		p.rememberClaudeTurn(turn.ID, claudeTurnWindow{start: turn.At})
+		window = claudeTurnWindow{start: turn.At, since: max(p.claudeEndedAt, p.enrolled.UnixMilli())}
 		// Reports can arrive out of order. A start older than the newest one
-		// seen belongs to an earlier turn and leaves the current turn in place.
+		// seen belongs to an earlier turn: it leaves the current turn in place
+		// and keeps a window for notice scope that ends where the next turn began.
 		if turn.At < p.claudeStartedAt {
-			return ""
+			for _, later := range p.claudeTurns {
+				if later.start > turn.At && (window.until == 0 || later.start < window.until) {
+					window.until = later.start
+				}
+			}
+			p.rememberClaudeTurn(turn.ID, window)
+			return "", nil
 		}
+		if p.claudeTurn != nil {
+			if previous, ok := p.claudeTurns[p.claudeTurn.ID]; ok && previous.until == 0 {
+				previous.until = turn.At
+				p.claudeTurns[p.claudeTurn.ID] = previous
+			}
+		}
+		p.rememberClaudeTurn(turn.ID, window)
 		p.claudeStartedAt, p.claudeTurn = turn.At, turn
-		return "busy"
+		return "busy", nil
+	}
+	if turn.Status == "interrupted" && observed {
+		if err := b.noticeInterrupted(p, *turn, &window); err != nil {
+			return "", err
+		}
+	} else if turn.Status != "interrupted" {
+		p.claudeEndedAt = max(p.claudeEndedAt, turn.At)
+		// A completion reported late still bounds the turns that started after it.
+		for id, later := range p.claudeTurns {
+			if later.start > turn.At && later.since < turn.At {
+				later.since = turn.At
+				p.claudeTurns[id] = later
+			}
+		}
 	}
 	window.ended = turn.At
 	p.rememberClaudeTurn(turn.ID, window)
 	if observed && p.claudeTurn != nil && p.claudeTurn.ID == turn.ID {
 		p.claudeTurn = turn
-		return "ready"
+		return "ready", nil
 	}
 	if !observed && (p.claudeTurn == nil || p.claudeTurn.Status != "inProgress") {
-		return "ready"
+		return "ready", nil
 	}
-	return ""
+	return "", nil
 }
 
 func (p *peer) rememberClaudeTurn(id string, window claudeTurnWindow) {

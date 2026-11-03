@@ -49,14 +49,18 @@ unchanged. Relay support moves the mailbox to schema 4; older brokers refuse it.
 
 Once a minute, the maintenance sweep finds messages at `wake_accepted` or `channel_written` whose latest event is older than the stall threshold while their local recipient is reported `ready`. The threshold is five minutes when the recipient's harness reports busy and idle turns, and fifteen minutes when it does not, such as Grok or a Codex session without native state observation. The sender gets one `stalled` notification per offer attempt, through the same status wake, `list_notifications` and `ack_notification` path. A busy or blocked recipient produces no notice.
 
-An observed Codex peer must remain ready for the whole five-minute window. A turn can fail after consuming a wake without fetching its message, so a turn after the offer does not suppress the notice. Other harnesses with busy and idle observation must have been ready since before the offer. A broker restart begins a new observation window for Codex.
+An observed Codex peer must remain ready for the whole five-minute window. The same rule applies to mail with an observed interruption on its current offer attempt, including Claude mail. Other harnesses with busy and idle observation must have been ready since before the offer. A broker restart begins a new observation window.
 
 Messages with a live replacement from the same sender to the same recipient produce no new stalled notice. Expired, refused, abandoned or overdue queued replacements do not suppress it. Each message is checked separately, so an expired middle message can leave both earlier and later messages eligible.
 
 The notice stores the message, recipient, delivery state, minutes since its last event and the offer attempt; guidance is rendered when read. AX does not offer the message again. Check the recipient, and if it is not working on the message, have it call `list_pending` once. A stalled notice stays as long as its message stays unresolved and is deleted with the message after retention.
 
-## Interrupted Codex turns
+## Interrupted turns
 
-When AX observes an interrupted Codex turn, it stores an `interrupted` notice for each unresolved local message that existed at the interruption, including fetched mail. Each message gets at most one interruption notice per offer attempt, even across later unrelated interruptions. Ordinary turn completion produces no interruption notice. The notice records the native turn ID and delivery state; guidance is rendered when read.
+When AX observes an interrupted Codex turn, it stores an `interrupted` notice for unresolved local mail, including fetched mail, because the native queue can strand it. Claude gets an immediate notice only for mail offered before the aborted turn started and since the previous observed normal completion. Mail offered during that turn gets no immediate notice, but becomes eligible for a stalled notice after five uninterrupted minutes ready. Continued work suppresses or resets that window. Older unrelated mail stays excluded.
+
+Both harnesses skip messages with a live replacement, using the stalled-notice rule above. Each message gets at most one interruption notice per offer attempt. Ordinary completion produces none. An interrupted offer that later stalls retains the turn ID, so its guidance describes interruption rather than a lost wake.
+
+Claude turn observation requires AX's bundled mod on Claude Code 2.1.290 or later. Completion changes readiness only when its turn ID matches the current turn; a superseded start remains available for notice scope. If AX missed a start, it cannot select that turn's mail for a notice. An older broker retains its legacy readiness behavior. A main completion can still release an AX hold while a background subagent's prompt remains open; permission prompts are not independently tracked.
 
 Sender bridges must declare `interrupted_notices` support at connection to receive these notices. Relay senders are excluded. Report the affected peer and message to the user and ask how to proceed. AX never acknowledges, resends or restarts the task in response to an interruption.
