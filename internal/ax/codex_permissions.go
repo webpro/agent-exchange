@@ -241,6 +241,7 @@ type codexSessionObserver struct {
 	pending map[string]bool
 	native  string
 	status  string
+	usage   *ContextUsage
 }
 
 func (o *codexSessionObserver) request(data []byte) {
@@ -266,17 +267,47 @@ func (o *codexSessionObserver) response(data []byte) []byte {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if p.Method != "" {
+		if p.Method != "thread/status/changed" && p.Method != "thread/tokenUsage/updated" && p.Method != "item/started" {
+			return nil
+		}
 		var params struct {
 			Thread string                `json:"threadId"`
 			Status struct{ Type string } `json:"status"`
+			Usage  *struct {
+				Last struct {
+					Total *int64 `json:"totalTokens"`
+				} `json:"last"`
+				Window *int64 `json:"modelContextWindow"`
+			} `json:"tokenUsage"`
+			Item struct{ Type string } `json:"item"`
 		}
-		if p.Method != "thread/status/changed" || json.Unmarshal(p.Params, &params) != nil || o.native == "" || params.Thread != o.native {
+		if json.Unmarshal(p.Params, &params) != nil || o.native == "" || params.Thread != o.native {
 			return nil
 		}
-		if params.Status.Type == o.status || codexLifecycleState(params.Status.Type) == "" {
-			return nil
+		if p.Method == "thread/tokenUsage/updated" {
+			if params.Usage == nil {
+				return nil
+			}
+			u := &ContextUsage{UsedTokens: params.Usage.Last.Total, WindowTokens: params.Usage.Window, ObservedAt: time.Now().UnixMilli()}
+			if !u.valid() {
+				return nil
+			}
+			o.usage = u
+		} else if p.Method == "item/started" {
+			if params.Item.Type != "contextCompaction" {
+				return nil
+			}
+			u := &ContextUsage{ObservedAt: time.Now().UnixMilli()}
+			if o.usage != nil {
+				u.WindowTokens = o.usage.WindowTokens
+			}
+			o.usage = u
+		} else {
+			if params.Status.Type == o.status || codexLifecycleState(params.Status.Type) == "" {
+				return nil
+			}
+			o.status = params.Status.Type
 		}
-		o.status = params.Status.Type
 		return o.event()
 	}
 	matched := o.pending[string(p.ID)]
@@ -297,6 +328,7 @@ func (o *codexSessionObserver) response(data []byte) []byte {
 	var status struct{ Type string }
 	_ = json.Unmarshal(result.Thread.Status, &status)
 	o.native, o.status = result.Thread.ID, status.Type
+	o.usage = &ContextUsage{ObservedAt: time.Now().UnixMilli()}
 	permission := "unknown"
 	switch result.Sandbox.Type {
 	case "readOnly":
@@ -306,11 +338,16 @@ func (o *codexSessionObserver) response(data []byte) []byte {
 	case "dangerFullAccess":
 		permission = "danger-full-access"
 	}
-	return raw(object{"hook_event_name": "SessionStart", "session_id": result.Thread.ID, "permission_mode": permission, "codex_status": o.status})
+	event := object{"hook_event_name": "SessionStart", "session_id": result.Thread.ID, "permission_mode": permission, "codex_status": o.status, "context_usage": o.usage}
+	return raw(event)
 }
 
 func (o *codexSessionObserver) event() []byte {
-	return raw(object{"hook_event_name": "CodexState", "session_id": o.native, "codex_status": o.status})
+	event := "CodexState"
+	if codexLifecycleState(o.status) == "" {
+		event = "ContextUsage"
+	}
+	return raw(object{"hook_event_name": event, "session_id": o.native, "codex_status": o.status, "context_usage": o.usage})
 }
 
 func (o *codexSessionObserver) unavailable() []byte {

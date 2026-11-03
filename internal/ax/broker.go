@@ -86,6 +86,7 @@ type peer struct {
 	stateSince    time.Time
 	cause         stateCause
 	codexObserved bool
+	usage         *ContextUsage
 }
 type serverConn struct {
 	networkWake chan struct{}
@@ -428,6 +429,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		State           string                `json:"state"`
 		Cause           *stateCause           `json:"state_cause"`
 		CodexStatus     string                `json:"codex_status"`
+		ContextUsage    *ContextUsage         `json:"context_usage"`
 		Policy          string                `json:"policy"`
 		Target          string                `json:"target"`
 		Text            string                `json:"text"`
@@ -506,6 +508,7 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 			p.State = "starting"
 			p.cause = stateCause{}
 			p.codexObserved = false
+			p.usage = nil
 			p.BindingError = ""
 			p.Permission = "unknown"
 			p.AllowBypass = s.AllowBypass
@@ -614,6 +617,9 @@ func (b *broker) request(c *serverConn, method string, params json.RawMessage) (
 		}
 		if a.Native != p.Native {
 			return nil, errors.New("hook belongs to another session")
+		}
+		if a.ContextUsage.valid() && (p.usage == nil || a.ContextUsage.ObservedAt >= p.usage.ObservedAt) {
+			p.usage = a.ContextUsage
 		}
 		if p.Host == "codex" && codexLifecycleState(a.CodexStatus) != "" {
 			p.codexObserved = true

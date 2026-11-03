@@ -14,6 +14,8 @@ If the harness accepts a session display-name option, set `nameFlag` in its regi
 
 Use a native API, lifecycle hook, or trusted plugin to identify the conversation the user selected. `bindAdapter` rejects rebinding an AX name to a different conversation. Do not discover identity by searching transcripts or observing terminal text.
 
+Context observations use `ax.lifecycle.context_usage`: optional `context_used_tokens` and `context_window_tokens`, with `context_observed_at_ms`. A newer snapshot replaces missing counts too. Codex reports `last.totalTokens` and `modelContextWindow` from the selected thread's `thread/tokenUsage/updated`; cumulative totals are not context usage. Unsupported harnesses omit the counts.
+
 For a Go integration, `startAdapterHost` accepts a native wake callback. Return success only when the host confirms acceptance. Grok demonstrates this with ACP prompt IDs and native queue events; a socket write alone is insufficient.
 
 For a native plugin, the same private per-launch Unix socket exposes:

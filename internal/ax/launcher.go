@@ -381,14 +381,15 @@ func Hook(dir, file string, in io.Reader, launch ...string) error {
 		expected = launch[0]
 	}
 	var input struct {
-		Session     string `json:"session_id"`
-		Event       string `json:"hook_event_name"`
-		Permission  string `json:"permission_mode"`
-		Tool        string `json:"tool_name"`
-		File        string `json:"session_file"`
-		Source      string `json:"source"`
-		Transcript  string `json:"transcript_path"`
-		CodexStatus string `json:"codex_status"`
+		Session      string        `json:"session_id"`
+		Event        string        `json:"hook_event_name"`
+		Permission   string        `json:"permission_mode"`
+		Tool         string        `json:"tool_name"`
+		File         string        `json:"session_file"`
+		Source       string        `json:"source"`
+		Transcript   string        `json:"transcript_path"`
+		CodexStatus  string        `json:"codex_status"`
+		ContextUsage *ContextUsage `json:"context_usage"`
 	}
 	if err := json.NewDecoder(io.LimitReader(in, maxFrame)).Decode(&input); err != nil {
 		return err
@@ -460,6 +461,8 @@ func Hook(dir, file string, in io.Reader, launch ...string) error {
 	state := "busy"
 	var cause *stateCause
 	switch input.Event {
+	case "ContextUsage":
+		state = ""
 	case "SessionStart":
 		state = "ready"
 		if s.Host == "claude" && input.Source == "compact" {
@@ -489,7 +492,7 @@ func Hook(dir, file string, in io.Reader, launch ...string) error {
 		return e
 	}
 	defer c.close()
-	return c.call("ax.lifecycle", object{"agent_id": s.ID, "secret": s.Secret, "native_session_id": input.Session, "launch_id": s.LaunchID, "permission_mode": input.Permission, "state": state, "state_cause": cause, "codex_status": input.CodexStatus}, nil)
+	return c.call("ax.lifecycle", object{"agent_id": s.ID, "secret": s.Secret, "native_session_id": input.Session, "launch_id": s.LaunchID, "permission_mode": input.Permission, "state": state, "state_cause": cause, "codex_status": input.CodexStatus, "context_usage": input.ContextUsage}, nil)
 }
 
 func bindingConflict(s Session, actual string) error {

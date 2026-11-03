@@ -58,6 +58,8 @@ type AgentStatus struct {
 type discoveredAgent struct {
 	Agent
 	*AgentStatus
+	*ContextUsage
+	ContextPercent *float64 `json:"context_used_percent,omitempty"`
 }
 
 // Enroll resets State to "starting" and only ax.lifecycle advances it, so a peer
@@ -265,6 +267,8 @@ func (b *broker) discovery() []discoveredAgent {
 	out := make([]discoveredAgent, len(agents))
 	for i, a := range agents {
 		out[i].Agent = a
+		out[i].ContextUsage = b.peers[a.ID].usage
+		out[i].ContextPercent = out[i].ContextUsage.percent()
 	}
 	mail, err := b.mailStatus()
 	if err != nil {

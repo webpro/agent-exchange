@@ -25,13 +25,15 @@ func TestCodexNativeSelectionCarriesEffectivePermissions(t *testing.T) {
 				t.Fatal("unsolicited response bound AX")
 			}
 			o.request(raw(object{"id": 1, "method": method}))
-			var hook struct{ Session, Permission string }
-			var event map[string]string
+			var event struct {
+				Session    string `json:"session_id"`
+				Permission string `json:"permission_mode"`
+				Event      string `json:"hook_event_name"`
+			}
 			if err := json.Unmarshal(o.response(response), &event); err != nil {
 				t.Fatal(err)
 			}
-			hook.Session, hook.Permission = event["session_id"], event["permission_mode"]
-			if hook.Session != native || hook.Permission != policy.permission || event["hook_event_name"] != "SessionStart" {
+			if event.Session != native || event.Permission != policy.permission || event.Event != "SessionStart" {
 				t.Fatalf("%s: %+v", method, event)
 			}
 			if o.response(response) != nil {
@@ -166,6 +168,7 @@ func TestCodexObserverPreservesNewerPermissions(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, response := range []object{
+				{"method": "thread/tokenUsage/updated", "params": object{"threadId": observedThread, "tokenUsage": object{"last": object{"totalTokens": 32000}, "modelContextWindow": 128000}}},
 				{"method": "thread/status/changed", "params": object{"threadId": observedThread, "status": object{"type": "active"}}},
 				{"method": "thread/status/changed", "params": object{"threadId": observedThread, "status": object{"type": "idle"}}},
 			} {

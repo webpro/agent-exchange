@@ -55,7 +55,7 @@ func printAgents(w io.Writer, agents []discoveredAgent, now time.Time) {
 		if a.Kind != "" {
 			kind = " kind=" + a.Kind + " permission=" + a.Permission
 		}
-		fmt.Fprintf(w, "%-18s %-8s %-10s policy=%s external=%s%s tools=%t wake=%s%s\n", a.Name, a.Host, a.State, a.Policy, externalPolicy(a.Agent), kind, a.Connectivity.Tools, a.Connectivity.Wake, statusColumns(a.AgentStatus, now))
+		fmt.Fprintf(w, "%-18s %-8s %-10s policy=%s external=%s%s tools=%t wake=%s%s%s\n", a.Name, a.Host, a.State, a.Policy, externalPolicy(a.Agent), kind, a.Connectivity.Tools, a.Connectivity.Wake, statusColumns(a.AgentStatus, now), contextColumns(a.ContextUsage, now))
 		if a.Capabilities != nil {
 			fmt.Fprintf(w, "  delivery: %s at %s (adapter %s)\n", a.Capabilities.Content, a.Capabilities.Boundary, a.Capabilities.AdapterVersion)
 		}
@@ -144,6 +144,18 @@ func compactToolResult(method string, result any, key string) any {
 		for _, a := range agents {
 			entry := object{"agent_id": a.ID, "name": a.Name, "host": a.Host, "state": a.State,
 				"online": a.Online, "policy": a.Policy}
+			if u := a.ContextUsage; u.valid() {
+				entry["context_observed_at_ms"] = u.ObservedAt
+				if u.UsedTokens != nil {
+					entry["context_used_tokens"] = *u.UsedTokens
+				}
+				if u.WindowTokens != nil {
+					entry["context_window_tokens"] = *u.WindowTokens
+				}
+				if percent := u.percent(); percent != nil {
+					entry["context_used_percent"] = *percent
+				}
+			}
 			if a.Kind != "" {
 				entry["kind"] = a.Kind
 				entry["permission_mode"] = a.Permission

@@ -102,6 +102,8 @@ ax resolve MESSAGE_ID abandon
 
 For missing peers or Claude Channels warnings, run `ax doctor` in each affected terminal. It reports the runtime path, fresh broker state, and local Claude eligibility checks without changing privacy settings. See [connection diagnostics](doctor.md).
 
+When a harness reports context usage, `list_agents` and `ax agents` show used tokens, window tokens and the reading's time. The percentage is calculated from those counts. Missing counts stay absent; AX never guesses a window from a model name. A reading describes the last native observation, not a live token count. Readings live in broker memory, so a broker restart clears them until the harness reports again.
+
 When a coding session exits, AX automatically removes it from discovery and releases its active endpoint slot. The broker checks session locks every five seconds; incomplete startups and legacy registrations get a 30-second grace period. A temporary messaging disconnect leaves a running session visible as offline. No cleanup command is needed.
 
 Saved conversations, identities, and mail remain on disk. Launching the same AX name restores its registration and resumes its conversation. Mail to a saved name, including replies after the requester exits, waits for its next launch, subject to expiration. Sending mail does not put an exited session back in discovery. `ax inbox NAME` and `ax status MESSAGE_ID` still show its delivery history.
