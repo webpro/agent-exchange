@@ -457,7 +457,12 @@ func Hook(dir, file string, in io.Reader, launch ...string) error {
 	state := "busy"
 	var cause *stateCause
 	switch input.Event {
-	case "SessionStart", "Stop":
+	case "SessionStart":
+		state = "ready"
+		if s.Host == "claude" && input.Source == "compact" {
+			state = ""
+		}
+	case "Stop":
 		state = "ready"
 	case "PermissionRequest":
 		state = "blocked"
